@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/zyw02/CoNest.git",
+  "commit": "57e0f0dbf19ab3ec9c9c6f57d2484077524ec28b",
+  "sdkRelease": "dev-sdk-20260915",
+  "sdkVersion": "0.1.0-rc.5",
+  "sdkArchiveSha256": "cd662c3cd5677c5649c735538f62a811e5be8a93aa073c1b9fd85137e64493e6",
+  "sdkLockSha256": "4e3878548416350c525fbcc19da3e854f773bc9328d0c9ab03280289381f8833",
+  "pnpmLockSha256": "32340f3449a9efc2d5816b96d87d1eb6cf33fbdfd56baaf980b3427359420022",
+  "node": ">=24.16.0 <25",
+  "packageManager": "pnpm@11.7.0",
+  "workerProtocol": 4
+}

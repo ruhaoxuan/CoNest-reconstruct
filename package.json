@@ -1,0 +1,50 @@
+{
+  "name": "@local/conest-harness-core",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.16.0 <25"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.mts",
+      "import": "./dist/testing.mjs"
+    },
+    "./adapters/dsh": {
+      "types": "./dist/adapters/dsh.d.mts",
+      "import": "./dist/adapters/dsh.mjs"
+    },
+    "./adapters/openclaw-facade": {
+      "types": "./dist/adapters/openclaw-facade.d.mts",
+      "import": "./dist/adapters/openclaw-facade.mjs"
+    },
+    "./adapters/types": {
+      "types": "./dist/adapters/types.d.mts",
+      "import": "./dist/adapters/types.mjs"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm run typecheck && node scripts/check.mjs",
+    "demo": "node examples/demo.mjs",
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "test:dsh": "node --test test/integration/*.test.mjs",
+    "test:upstream": "node scripts/test-upstream.mjs",
+    "demo:dsh": "node examples/dsh.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:types": "node scripts/test-types.mjs",
+    "pretest": "npm run typecheck && npm run build",
+    "studio": "npm run build && node dist/studio/launch.mjs",
+    "test:studio": "npm run build && node --test test/studio.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.0",
+    "typescript": "6.0.3"
+  }
+}

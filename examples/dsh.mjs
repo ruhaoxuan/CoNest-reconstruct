@@ -2,10 +2,10 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { HarnessManager, HarnessRegistry } from '../dist/index.mjs';
-import { createDshHostBinding } from '../dist/adapters/openclaw-facade.mjs';
+import { createDshHostBinding } from '../dist/adapters/host-binding.mjs';
 const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'conest-dsh-demo-')));
 const registry = new HarnessRegistry();
-const binding = createDshHostBinding({ runtimeRoot: path.resolve('.vendor/conest'), proofMode: true });
+const binding = createDshHostBinding({ runtimeRoot: path.resolve('.vendor/dsh-runtime'), proofMode: true });
 registry.register(binding.provider);
 const manager = new HarnessManager(registry);
 manager.create({ id: 'dsh-proof', provider: 'dsh', config: { workspaceRoot: root, sessionPersistenceRoot: path.join(root, 'sessions') },

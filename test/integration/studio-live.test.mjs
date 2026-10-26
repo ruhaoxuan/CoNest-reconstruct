@@ -24,12 +24,13 @@ test('offline live transport -> real DSH -> workspace tools: independent files, 
       assert.equal(input.model, 'deepseek-v4-flash');
       const task = [...input.messages].reverse().find(m => m.role === 'user' && JSON.stringify(m.content).includes('TEST_TASK:'))?.content ?? '';
       const text = typeof task === 'string' ? task : JSON.stringify(task); lastTask = text;
-      assert.deepEqual(input.tools.map(t=>t.function.name).sort(),['list_files','read_file','search_text']);
+      assert.deepEqual((input.tools??[]).map(t=>t.function.name).sort(),text.includes('NO_TOOLS')?[]:text.includes('READ_ONLY_COMPOSITION')?['read_file']:['list_files','read_file','search_text']);
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
       if (text.includes('WAIT_FOR_CANCEL')) { res.write(': waiting\n\n'); waiting.resolve(); return; }
       const tool = [...input.messages].reverse().find(m => m.role === 'tool');
       const send = (delta, finish_reason = null) => res.write('data: ' + JSON.stringify({ id:'local-fixture',object:'chat.completion.chunk',created:1,model:input.model,
         choices:[{index:0,delta,finish_reason}] }) + '\n\n');
+      if(text.includes('NO_TOOLS')){send({role:'assistant',content:'NO_TOOLS_OK'});send({},'stop');res.end('data: [DONE]\n\n');return;}
       if (tool) { send({role:'assistant',content:'LOCAL_MODEL_RESULT: '+JSON.stringify(tool.content)}); send({},'stop'); }
       else {
         const name = text.includes('LIST') ? 'list_files' : text.includes('SEARCH') ? 'search_text' : 'read_file';
@@ -51,7 +52,7 @@ test('offline live transport -> real DSH -> workspace tools: independent files, 
   }
   await writeFile(path.join(root,'outside.txt'),'OUTSIDE_SECRET');
   const credentials=createEnvironmentCredentials({DEEPSEEK_API_KEY:credential});
-  const app=createStudioApplication(JSON.stringify({schemaVersion:1,instances}),createLiveStudioProviders(path.resolve('.vendor/conest'),credentials,
+  const app=createStudioApplication(JSON.stringify({schemaVersion:1,instances}),createLiveStudioProviders(path.resolve('.vendor/dsh-runtime'),credentials,
     {baseURL:`http://127.0.0.1:${mock.address().port}`}));
   const token=randomUUID();const studio=await startStudio({...app,token,port:0,mode:'live',redact:credentials.redact});
   t.after(async()=>{await studio.close();mock.closeAllConnections();await new Promise(r=>mock.close(r));await rm(root,{recursive:true,force:true});});
@@ -77,6 +78,12 @@ test('offline live transport -> real DSH -> workspace tools: independent files, 
   await api('stop',{instanceId:'alpha'});assert.equal(app.manager.snapshot('alpha').activeRuns,0);
   assert.match((await run('beta','READ')).text,/9200/);assert(requests>0);
   assert.doesNotMatch(JSON.stringify(await api('state')),new RegExp(credential));
+  const previous=app.manager.configured('alpha');
+  await app.manager.applyConfig('alpha',{...instances[0],providerConfig:{...instances[0].providerConfig,composition:{id:'workspace-readonly-v1',plugins:['workspace.read']}}},previous.revision);
+  await api('start',{instanceId:'alpha'});const restricted=await run('alpha','READ_ONLY_COMPOSITION');assert.equal(restricted.state,'completed');
+  assert.deepEqual(app.manager.snapshot('alpha').toolPublication.tools.map(t=>t.name),['read_file']);
+  await api('stop',{instanceId:'alpha'});await app.manager.applyConfig('alpha',{...instances[0],providerConfig:{...instances[0].providerConfig,composition:{id:'workspace-readonly-v1',plugins:[]}}},app.manager.configured('alpha').revision);
+  await api('start',{instanceId:'alpha'});assert.match((await run('alpha','NO_TOOLS')).text,/NO_TOOLS_OK/);assert.equal(app.manager.snapshot('alpha').toolPublication.tools.length,0);
 });
 
 

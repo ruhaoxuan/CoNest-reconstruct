@@ -6,10 +6,10 @@ import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { HarnessManager, HarnessRegistry } from '../../dist/index.mjs';
 import { createDshProvider } from '../../dist/adapters/dsh.mjs';
-import { createDshHostBinding } from '../../dist/adapters/openclaw-facade.mjs';
+import { createDshHostBinding } from '../../dist/adapters/host-binding.mjs';
 import { loadPinnedClient } from '../../dist/adapters/pinned-runtime.mjs';
 
-const runtimeRoot = path.resolve('.vendor/conest');
+const runtimeRoot = path.resolve('.vendor/dsh-runtime');
 async function fixture(t, resolveTurn) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'conest-dsh-step2-')));
   let client;
@@ -74,7 +74,7 @@ test('cancel reaches real host tool and releases the DSH session without replaci
   blocking = false; epoch = 'epoch-2';
   assert.match((await f.manager.run('dsh', task('two', 'PROOF:BASH:'))).output.finalText, /RECOVERED/);
 });
-test('OpenClaw host facade runs through manager and real DSH with proof model only', { timeout: 60_000 }, async t => {
+test('neutral host binding runs through manager and real DSH with proof model only', { timeout: 60_000 }, async t => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'conest-host-facade-')));
   const binding = createDshHostBinding({ runtimeRoot, proofMode: true });
   const registry = new HarnessRegistry(); registry.register(binding.provider);
@@ -87,16 +87,4 @@ test('OpenClaw host facade runs through manager and real DSH with proof model on
   const result = await host.runHarnessAgent({ task: 'PROOF:IMAGE:', sessionKey: 's', hostSessionId: 'sid', hostAgentId: 'main',
     hostLifecycleRevision: 'epoch', provider: 'bridge-proof', model: 'test', timeoutMs: 15_000, hostTools: [] });
   assert.match(result.finalText, /DSH_IMAGE_INPUT_MISSING/);
-  // Execute the unchanged upstream OpenClaw HarnessV2 adapter through the new
-  // host seam. Only the model route is replaced with a proof provider in this test.
-  const { createDshAgentHarness } = await import(pathToFileURL(path.join(runtimeRoot, 'dist/studio/dsh-agent-harness.js')).href);
-  const harness = createDshAgentHarness({ timeoutMs: 15_000,
-    host: { runHarnessAgent: options => host.runHarnessAgent({ ...options, provider: 'bridge-proof', model: 'test' }) } });
-  const outcome = await harness.runAttempt({ runId: 'host-run', sessionId: 'another-session', sessionKey: 'agent:main:step2',
-    agentId: 'main', provider: 'deepseek', modelId: 'deepseek-v4-flash', prompt: 'PROOF:BASH:',
-    config: {}, workspaceDir: root, timeoutMs: 15_000, abortSignal: new AbortController().signal,
-    hostCapabilities: { assertActive() {}, createToolSurface: () => [{ name: 'bash', label: 'bash', description: 'proof callback',
-      parameters: { type: 'object' }, execute: async () => ({ content: [{ type: 'text', text: 'HARNESSV2_STEP2_OK' }], details: {} }) }] } });
-  assert.equal(outcome.terminal.kind, 'ok');
-  assert.match(JSON.stringify(outcome), /HARNESSV2_STEP2_OK/);
 });

@@ -49,6 +49,8 @@ test('failed startup rolls back provider resources and can be retried', async ()
   const { manager } = fixture({}, { start: () => { if (++starts === 1) throw new Error('fail once'); }, stop: () => stops++ });
   await assert.rejects(manager.start('a'), code('START_FAILED'));
   assert.equal(stops, 1); assert.equal(manager.snapshot('a').state, 'failed');
+  await assert.rejects(manager.start('a'),code('RESTART_BACKOFF'));
+  await sleep(Math.max(1,manager.snapshot('a').nextStartAt-Date.now()));
   await manager.start('a'); await manager.stop('a'); assert.equal(stops, 2);
 });
 test('failed startup cleanup retains ownership and prevents a second instance', async () => {

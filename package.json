@@ -1,6 +1,6 @@
 {
   "name": "@local/conest-harness-core",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -26,6 +26,18 @@
     "./adapters/types": {
       "types": "./dist/adapters/types.d.mts",
       "import": "./dist/adapters/types.mjs"
+    },
+    "./state-store": {
+      "types": "./dist/state-store.d.mts",
+      "import": "./dist/state-store.mjs"
+    },
+    "./credentials": {
+      "types": "./dist/credentials.d.mts",
+      "import": "./dist/credentials.mjs"
+    },
+    "./adapters/host-binding": {
+      "types": "./dist/adapters/host-binding.d.mts",
+      "import": "./dist/adapters/host-binding.mjs"
     }
   },
   "scripts": {
@@ -35,16 +47,25 @@
     "demo": "node examples/demo.mjs",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
     "test:dsh": "node --test test/integration/*.test.mjs",
-    "test:upstream": "node scripts/test-upstream.mjs",
     "demo:dsh": "node examples/dsh.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:types": "node scripts/test-types.mjs",
     "pretest": "npm run typecheck && npm run build",
     "studio": "npm run build && node dist/studio/launch.mjs",
-    "test:studio": "npm run build && node --test test/studio.test.mjs"
+    "test:studio": "npm run build && node --test test/studio.test.mjs",
+    "schema": "node scripts/config-schema.mjs",
+    "control": "node scripts/control.mjs",
+    "validate": "npm test && npm run test:types && npm run check && npm run test:dsh"
   },
   "devDependencies": {
     "@types/node": "22.20.0",
     "typescript": "6.0.3"
-  }
+  },
+  "files": [
+    "dist/",
+    "scripts/",
+    "examples/",
+    "runtime.lock.json",
+    "README.md"
+  ]
 }

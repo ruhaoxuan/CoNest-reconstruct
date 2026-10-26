@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createDshProvider } from '../dist/adapters/dsh.mjs';
-import { createDshHostBinding } from '../dist/adapters/openclaw-facade.mjs';
+import { createDshHostBinding } from '../dist/adapters/host-binding.mjs';
 import { HarnessRegistry, HarnessManager } from '../dist/index.mjs';
 import { parseDshResult } from '../dist/adapters/validation.mjs';
 const response = text => ({ sessionId: 's', provider: 'bridge-proof', model: 'test', finalText: text,
@@ -68,7 +68,7 @@ test('an absent tool and a foreign subject session are rejected', async t => {
   await assert.rejects(f.retained().callbacks.tool({ name: 'shell' }, new AbortController().signal));
   await assert.rejects(f.manager.run('dsh', { ...request, runId: 'two', subject: 'bob' }));
 });
-test('OpenClaw compatibility binding forwards task, permissions and caller signal', async () => {
+test('neutral host binding forwards task, permissions and caller signal', async () => {
   const controller = new AbortController();
   const binding = createDshHostBinding({ runtimeRoot: '/tmp', loadClient: async () => class {} });
   const host = binding.bind({ async run(id, task, options) {

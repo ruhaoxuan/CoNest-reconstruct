@@ -54,3 +54,14 @@ const invalidFault: InstanceFailureCode = 'arbitrary provider message';
 const invalidManagement: StudioPermission = 'root';
 // @ts-expect-error resource state cannot claim success without confirmed release
 const invalidResource: InstanceSnapshot['resourceState'] = 'probably-stopped';
+
+import type { Control } from '../../src/config.mjs';
+import type { NativeSetup } from '../../src/adapters/native-protocol.mjs';
+// @ts-expect-error force stop is an explicit boolean, not an arbitrary command or PID
+void manager.stop('sample',{force:42});
+// @ts-expect-error dynamic task tool identities are immutable
+admitted.tools?.push('shell');
+// @ts-expect-error native SDK setup cannot select an unrelated Gateway or service
+const unsafeNative:NativeSetup={workspaceRoot:'/w',sessionPersistenceRoot:'/s',enableBridgeProofAdapter:true,gateway:'ws://example.com'};
+// @ts-expect-error restart limit must be a number
+const invalidRestart:Control['restart']={maxFailures:'unlimited',windowMs:1000,baseDelayMs:100,maxDelayMs:1000};

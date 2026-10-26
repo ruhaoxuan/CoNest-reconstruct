@@ -11,7 +11,7 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(condition){for(let i=0;i<200;i++){if(condition())return;await pause(20);}throw Error('State timeout');}
 const request=(id,input='PROOF:IMAGE:')=>({runId:id,subject:'operator',permissions:['host:tools'],input,timeoutMs:15000});
 async function fixture(t,execute){
- const root=await realpath(await mkdtemp(path.join(os.tmpdir(),'p5-dsh-fault-'))),runtime=path.resolve('.vendor/conest');
+ const root=await realpath(await mkdtemp(path.join(os.tmpdir(),'p5-dsh-fault-'))),runtime=path.resolve('.vendor/dsh-runtime');
  const Client=await loadPinnedClient(runtime),clients=[];let retained;
  const provider=createDshProvider({runtimeRoot:runtime,proofMode:true,loadClient:async()=>class extends Client{
   constructor(options){super(options);clients.push({client:this,notify:options.onFailure});}
@@ -34,7 +34,7 @@ test('owned DSH crash interrupts active work, isolates B, detects idle crash and
  process.kill(pid,'SIGKILL');await rejected;await until(()=>f.manager.snapshot('a').state==='failed');
  assert(events.some(e=>e.type==='run.interrupted'));await assert.rejects(f.manager.run('a',request('blocked')));
  assert.equal((await f.manager.run('b',request('healthy'))).state,'completed');assert.equal(f.clients.length,2);
- await f.manager.stop('a',{graceMs:6000});await f.manager.start('a');
+ await f.manager.stop('a',{graceMs:6000});await pause(Math.max(1,f.manager.snapshot('a').nextStartAt-Date.now()));await f.manager.start('a');
  a.notify('late old process exit');assert.equal(f.manager.snapshot('a').state,'ready');
  await assert.rejects(stale.callbacks.tool({name:'bash',callId:'late',args:{}},new AbortController().signal));
  assert.equal((await f.manager.run('a',request('recovered'))).state,'completed');

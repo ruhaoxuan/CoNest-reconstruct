@@ -5,6 +5,7 @@ import { PROTOCOL_VERSION, requireCondition } from './contracts.mjs';
 /** Finite noncooperative work lets tests verify truthful cleanup accounting. */
 export function createTestProvider(id = 'test.echo', hooks: { start?: () => void; stop?: () => void; run?: (task: AdmittedTask) => void } = {}): HarnessProvider<Config, { text: string }> {
   return {
+    configContract:{version:1,fields:[],schema:{type:'object',additionalProperties:false,properties:{mode:{enum:['echo','wait','fail','ignore-cancel']},delayMs:{type:'integer',minimum:1,maximum:5000},failStart:{type:'boolean'}}}},
     id, version: '0.1.0', protocolVersion: PROTOCOL_VERSION,
     features: { cooperativeCancel: true, processControl: 'owned', toolGateway: false, resume: false },
     validateConfig(raw) {

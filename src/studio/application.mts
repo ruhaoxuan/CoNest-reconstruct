@@ -3,6 +3,7 @@ import { open } from 'node:fs/promises';
 import { parseConfig } from '../config.mjs';
 import type { ResolvedConfig } from '../config.mjs';
 import { requireCondition } from '../contracts.mjs';
+import type { ManagerOptions } from '../manager.mjs';
 import { HarnessManager } from '../manager.mjs';
 import { HarnessRegistry } from '../registry.mjs';
 import type { HarnessProvider, HarnessEvent } from '../types.mjs';
@@ -11,6 +12,7 @@ import type { HarnessProvider, HarnessEvent } from '../types.mjs';
 export interface StudioProvider {
   readonly provider: HarnessProvider;
   readonly permissions: readonly string[];
+  permissionsFor?(config:unknown):readonly string[];
   validateInput(input: string): string;
   validateInstances?(instances: readonly ResolvedConfig[]): void;
 }
@@ -30,7 +32,7 @@ export async function readStudioConfig(file: string): Promise<string> {
   } finally { await handle.close(); }
 }
 
-export function createStudioApplication(text: string, definitions: readonly StudioProvider[]) {
+export function createStudioApplication(text: string, definitions: readonly StudioProvider[], options: ManagerOptions = {}) {
   const registry = new HarnessRegistry();
   const entries = new Map<string, StudioProvider>();
   for (const entry of definitions) {
@@ -40,7 +42,7 @@ export function createStudioApplication(text: string, definitions: readonly Stud
   // Validate the entire document, including cross-instance constraints, before creation.
   const configs = parseConfig(text, registry);
   for (const entry of definitions) entry.validateInstances?.(configs.filter(c => c.spec.provider === entry.provider.id));
-  const manager = new HarnessManager(registry);
+  const manager = new HarnessManager(registry,options);
   for (const { spec, control } of configs) manager.createConfigured({
     id: spec.id, provider: spec.provider, providerConfigVersion: 1,
     enabled: spec.enabled, policy: spec.policy, control, providerConfig: spec.config,
@@ -49,7 +51,7 @@ export function createStudioApplication(text: string, definitions: readonly Stud
     const entry = entries.get(manager.snapshot(id).provider);
     requireCondition(entry, 'PROVIDER_NOT_FOUND', 'Studio provider is unavailable');
     const result = await manager.run(id, { runId: randomUUID(), subject: 'studio',
-      input: entry.validateInput(input), permissions: entry.permissions }, { signal, onEvent });
+      input: entry.validateInput(input), permissions: entry.permissionsFor?.(manager.configured(id)?.spec.config)??entry.permissions }, { signal, onEvent });
     return result.output;
   } };
 }

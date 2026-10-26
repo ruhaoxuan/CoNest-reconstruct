@@ -8,7 +8,7 @@ export class HarnessRegistry {
     requireCondition(!this.#providers.has(descriptor.id), 'PROVIDER_EXISTS', 'Provider is already registered');
     // Snapshot method bindings and metadata; later descriptor mutation cannot reroute instances.
     this.#providers.set(descriptor.id, Object.freeze({ descriptor,
-      validateConfig: provider.validateConfig.bind(provider), createInstance: (config: unknown) => provider.createInstance(config as C) }));
+      validateConfig: provider.validateConfig.bind(provider),...(provider.toolSurface?{toolSurface:(config:unknown)=>provider.toolSurface!(config as C)}:{}), createInstance: (config: unknown, context?: {readonly signal: AbortSignal}) => provider.createInstance(config as C, context) }));
   }
   list() { return [...this.#providers.values()].map(p => structuredClone(p.descriptor)); }
   resolve(id: string) {

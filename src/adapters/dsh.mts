@@ -1,28 +1,30 @@
+import { DSH_CONFIG_SCHEMA, WORKSPACE_PLUGINS } from './dsh-config.mjs';
+import { publishTools } from '../publication.mjs';
 import { object, fields } from '../config.mjs';
 import type { HarnessProvider, ToolTrace, InstanceFailureCode } from '../types.mjs';
 import type { DshProviderOptions, DshConfig, AdmittedHostTool } from './types.mjs';
 export type { DshProviderOptions, DshConfig, DshTurn } from './types.mjs';
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { HarnessError, PROTOCOL_VERSION, requireCondition } from '../contracts.mjs';
 import { loadPinnedClient } from './pinned-runtime.mjs';
 
-/** Trusted bridge from a finalized host tool surface to the existing private RPC.
+/** Trusted bridge from a finalized host tool surface to the CoNest-owned private IPC.
  * resolveTurn must be supplied by the entry adapter, not by model arguments.
  */
 export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute, redact = text => text, proofMode = false, loadClient = loadPinnedClient }: DshProviderOptions): HarnessProvider<DshConfig> {
   requireCondition(typeof resolveTurn === 'function', 'INVALID_PROVIDER', 'A trusted turn resolver is required');
   return {
-    configContract: { version: 1, fields: [ { path: 'workspaceRoot', scope: 'dsh.workspace', update: 'immutable' }, { path: 'sessionPersistenceRoot', scope: 'dsh.storage', update: 'immutable' }, { path: 'model', scope: 'dsh.model-route', update: 'restart-required' }, { path: 'execution.maxParallelToolCalls', scope: 'dsh.agent-loop', update: 'restart-required' } ] },
+    configContract: { version: 1, schema:DSH_CONFIG_SCHEMA, fields: [ { path: 'workspaceRoot', scope: 'dsh.workspace', update: 'immutable' }, { path: 'sessionPersistenceRoot', scope: 'dsh.storage', update: 'immutable' }, { path: 'composition', scope:'dsh.host-tool-surface',update:'restart-required' }, { path: 'model', scope: 'dsh.model-route', update: 'restart-required' }, { path: 'execution.maxParallelToolCalls', scope: 'dsh.agent-loop', update: 'restart-required' } ] },
     id: 'dsh', version: '0.2.0', protocolVersion: PROTOCOL_VERSION,
     features: { cooperativeCancel: true, processControl: 'owned', resume: true,
-      toolGateway: true, externalToolMediation: true },
+      toolGateway: true, externalToolMediation: true, hardTermination: true },
     validateConfig(raw) {
       requireCondition(raw !== null && typeof raw === "object" && !Array.isArray(raw), "INVALID_CONFIG", "Configuration must be an object");
       const input = raw as Record<string, unknown>;
       requireCondition(raw && typeof raw === 'object' && !Array.isArray(raw) &&
-        Object.keys(raw).every(k => ['workspaceRoot', 'sessionPersistenceRoot', 'execution', 'model'].includes(k)),
+        Object.keys(raw).every(k => ['workspaceRoot', 'sessionPersistenceRoot', 'execution', 'model', 'composition'].includes(k)),
         'INVALID_CONFIG', 'Unknown DSH instance configuration field');
       requireCondition(typeof input.workspaceRoot === 'string' && path.isAbsolute(input.workspaceRoot),
         'INVALID_CONFIG', 'An absolute existing workspace is required');
@@ -34,6 +36,8 @@ export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute,
       fields(execution,['maxParallelToolCalls'],'execution');
       const parallel = execution.maxParallelToolCalls === undefined ? 4 : execution.maxParallelToolCalls;
       requireCondition(typeof parallel === 'number' && Number.isInteger(parallel) && parallel >= 1 && parallel <= 16, 'INVALID_CONFIG', 'execution.maxParallelToolCalls: integer 1..16 required');
+      let composition:DshConfig['composition'];
+      if(input.composition!==undefined){const value=object(input.composition,'composition');fields(value,['id','plugins'],'composition');requireCondition(value.id==='workspace-readonly-v1'&&Array.isArray(value.plugins)&&new Set(value.plugins).size===value.plugins.length&&value.plugins.every(id=>(WORKSPACE_PLUGINS as readonly unknown[]).includes(id)),'INVALID_CONFIG','Unsupported trusted composition');composition={id:'workspace-readonly-v1',plugins:value.plugins as string[]};}
       let model: DshConfig['model'];
       if (input.model !== undefined) {
         const value = object(input.model, 'model'); fields(value, ['name', 'credentialRef'], 'model');
@@ -41,16 +45,12 @@ export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute,
         requireCondition(typeof value.credentialRef === 'string' && /^env:[A-Z][A-Z0-9_]{0,63}$/.test(value.credentialRef), 'INVALID_CONFIG', 'Expected a credential reference');
         model = { name: value.name, credentialRef: value.credentialRef };
       }
-      return { ...(model ? { model } : {}), workspaceRoot, sessionPersistenceRoot: path.resolve(input.sessionPersistenceRoot), execution: { maxParallelToolCalls: parallel } };
+      return { ...(composition?{composition}:{}),...(model ? { model } : {}), workspaceRoot, sessionPersistenceRoot: path.resolve(input.sessionPersistenceRoot), execution: { maxParallelToolCalls: parallel } };
     },
     async createInstance(config) {
       const Client = await loadClient(runtimeRoot);
-      if (loadClient === loadPinnedClient && config.execution?.maxParallelToolCalls !== 4) {
-        const seal = object(JSON.parse(await readFile(path.join(runtimeRoot,'reconstruct-runtime.json'),'utf8')), 'runtime');
-        requireCondition(object(seal.overlay,'overlay').id === 'config-parallel-v1', 'RUNTIME_MISMATCH', 'Configured parallelism requires the audited parameter bridge');
-      }
       let failureHandler: ((code: InstanceFailureCode) => void) | undefined;
-      const client = new Client({ workerFile: path.join(runtimeRoot, 'dist/worker.js'),
+      const client = new Client({ workerFile: fileURLToPath(new URL('./native-worker.mjs',import.meta.url)),
         workspaceRoot: config.workspaceRoot, startupTimeoutMs: 30_000, shutdownTimeoutMs: 5000, onFailure: () => failureHandler?.('PROCESS_EXITED') });
       // Credential/transport routing comes from trusted services, never JSON/model arguments.
       const modelRoute = await resolveModelRoute?.(config);
@@ -61,6 +61,7 @@ export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute,
         setFailureHandler(handler) { failureHandler = handler; },
         async start() { await client.start(); await client.extension({ operation: 'start', setup }); },
         async stop() { await client.stop(); },
+        async terminate() { requireCondition(typeof client.terminate==='function','TERMINATION_DENIED','Pinned client does not support owned termination'); await client.terminate(); },
         async run(task, { signal, emit, assertAuthorized }) {
           const turn = await resolveTurn(task, config);
           requireCondition(turn && typeof turn.assertActive === 'function' && Array.isArray(turn.hostTools),
@@ -82,8 +83,10 @@ export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute,
             requireCondition(typeof tool.name === 'string' && !tools.has(tool.name) && typeof tool.execute === 'function' &&
               Array.isArray(tool.permissions) && tool.permissions.every((p: unknown) => typeof p === 'string' && task.permissions.includes(p)),
               'PERMISSION_DENIED', 'Tool exceeds the admitted task surface');
-            tools.set(tool.name, tool);
+            if(!task.tools||task.tools.includes(tool.name))tools.set(tool.name, tool);
           }
+          if(task.toolPublication){const actual=publishTools([...tools.values()].map(t=>({name:t.name,description:t.description,parameters:t.parameters,permissions:t.permissions})));requireCondition(actual.revision===task.toolPublication.revision,'TOOL_PUBLICATION_MISMATCH','Final tool surface differs from admitted publication');}
+          const callbackWork=new Set<Promise<unknown>>();
           let active = true;
           const assertActive = () => {
             requireCondition(active, 'CALLBACK_EXPIRED', 'Turn has ended');
@@ -110,14 +113,16 @@ export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute,
                   requireCondition(typeof callback.name === "string" && typeof callback.callId === "string", "INVALID_REQUEST", "Malformed tool callback identity");
                   const tool = tools.get(callback.name);
                   requireCondition(tool, 'CALLBACK_DENIED', 'Tool is not in the finalized surface');
+                  for(const permission of tool.permissions)assertAuthorized(permission,tool.name);
                   const combined = AbortSignal.any([signal, callbackSignal]);
                   combined.throwIfAborted();
                   const trace = (event: ToolTrace) => emit(event);
                   const started = Date.now();
                   trace({ kind: 'tool', callId: callback.callId, name: tool.name, status: 'running' });
                   try {
-                    const result = await tool.execute(callback.callId, callback.args, combined);
-                    assertActive(); combined.throwIfAborted();
+                    const invocation=Promise.resolve().then(()=>tool.execute(callback.callId as string,callback.args,combined));callbackWork.add(invocation);
+                    let result:unknown;try{result=await invocation;}finally{callbackWork.delete(invocation);}
+                    assertActive();for(const permission of tool.permissions)assertAuthorized(permission,tool.name); combined.throwIfAborted();
                     let preview = '[Unserializable result]', previewTruncated = false;
                     try { const text = redact(JSON.stringify(result) ?? ''); previewTruncated = text.length > 2000; preview = text.slice(0, 2000); } catch {}
                     trace({ kind: 'tool', callId: callback.callId, name: tool.name, status: 'completed', durationMs: Date.now() - started, preview, previewTruncated });
@@ -145,7 +150,7 @@ export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute,
                   args: { sessionId: turn.hostSessionId, agentId: turn.hostAgentId }, timeoutMs: 5000 }); }
                 catch (error) { failureHandler?.('TRANSPORT_LOST'); await client.stop(); throw error; }
               }
-            } finally { running.delete(session); }
+            } finally { await Promise.allSettled([...callbackWork]);running.delete(session); }
           }
         },
       };

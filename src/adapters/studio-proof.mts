@@ -50,10 +50,10 @@ export function createProofStudioProviders(runtimeRoot: string): readonly Studio
     { provider: dsh, permissions: ['host:tools'], validateInput,
       validateInstances(instances) {
         validateDshStorage(instances);
-        requireCondition(instances.every(i => !(i.spec.config as DshConfig).model), 'INVALID_CONFIG', 'Model routes require explicit live mode');
+        requireCondition(instances.every(i => !(i.spec.config as DshConfig).model&&!(i.spec.config as DshConfig).composition), 'INVALID_CONFIG', 'Model routes require explicit live mode');
       },
     },
-    { provider: { ...createTestProvider(), configContract: { version: 1, fields: [] } },
+    { provider: createTestProvider(),
       permissions: [], validateInput: input => input },
   ];
 }

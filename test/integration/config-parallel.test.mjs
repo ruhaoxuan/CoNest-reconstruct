@@ -6,8 +6,8 @@ import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { loadPinnedClient } from '../../dist/adapters/pinned-runtime.mjs';
 test('audited composition parameters change actual DSH parallel tool execution', {timeout:30000}, async t=>{
- const runtime=path.resolve('.vendor/conest');await loadPinnedClient(runtime);
- const {CordisBridgeHost}=await import(pathToFileURL(path.join(runtime,'dist/studio/host-runtime.js')).href);
+ const runtime=path.resolve('.vendor/dsh-runtime');await loadPinnedClient(runtime);
+ const {CordisBridgeHost}=await import(pathToFileURL(path.join(runtime,'dist/studio/cordis-bridge-host.js')).href);
  const {LlmAdapter}=await import(pathToFileURL(path.join(runtime,'dist/adapters/dsh-llm.js')).href);
  for(const parallel of [1,2]){
   const root=await realpath(await mkdtemp(path.join(os.tmpdir(),'config-parallel-')));const host=new CordisBridgeHost();

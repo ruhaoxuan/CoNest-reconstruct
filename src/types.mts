@@ -7,9 +7,10 @@ export interface HarnessFeatures {
   resume?: boolean;
   toolGateway?: boolean;
   externalToolMediation?: boolean;
+  hardTermination?: boolean;
 }
 export interface ProviderDescriptor {
-  readonly configContract?: { readonly version: 1; readonly fields: readonly { path: string; scope: string; update: 'restart-required' | 'immutable' }[] };
+  readonly configContract?: { readonly version: 1; readonly schema?: Record<string, unknown>; readonly fields: readonly { path: string; scope: string; update: 'restart-required' | 'immutable' }[] };
   readonly id: string;
   readonly version: string;
   readonly protocolVersion: number;
@@ -29,9 +30,15 @@ export interface AdmittedTask {
   readonly subject: string;
   readonly input: string;
   readonly permissions: readonly string[];
+  readonly toolPublication?: ToolPublication;
   readonly expiresAt: number;
+  readonly tools?: readonly string[];
 }
 interface EventBase {
+  readonly subject?: string;
+  readonly permissions?: readonly string[];
+  readonly tools?: readonly string[];
+  readonly publicationRevision?: string;
   readonly instanceId: string;
   readonly generation: string;
   readonly runId: string;
@@ -43,30 +50,35 @@ export type HarnessEvent = EventBase & (
   | { readonly type: 'run.started' | 'run.completed' | 'run.timed-out' | 'run.cancelled' | 'run.failed' | 'run.revoked' | 'run.interrupted'; readonly data?: never }
 );
 export interface ExecutionContext {
-  readonly assertAuthorized: () => void;
+  readonly markUncertain: () => void;
+  readonly assertAuthorized: (permission?: string, tool?: string) => void;
   readonly signal: AbortSignal;
   readonly emit: (data: unknown) => void;
 }
-export type InstanceFailureCode = 'PROCESS_EXITED' | 'TRANSPORT_LOST';
+export type InstanceFailureCode = 'PROCESS_EXITED' | 'TRANSPORT_LOST' | 'CREDENTIAL_REVOKED' | 'CREDENTIAL_STALE';
 export interface HarnessInstance<Output = unknown> {
   setFailureHandler?(handler: ((code: InstanceFailureCode) => void) | undefined): void;
-  start(): Promise<void>;
+  start(context?: {readonly signal: AbortSignal}): Promise<void>;
   run(task: AdmittedTask, context: ExecutionContext): Promise<Output>;
   stop(): Promise<void>;
+  terminate?(): Promise<void>;
 }
 export interface HarnessProvider<Config = unknown, Output = unknown> extends ProviderDescriptor {
+  toolSurface?(config:Config):readonly ToolSchema[];
   validateConfig(raw: unknown): Config;
-  createInstance(config: Config): Promise<HarnessInstance<Output>>;
+  createInstance(config: Config, context?: { readonly signal: AbortSignal }): Promise<HarnessInstance<Output>>;
 }
 export interface RegisteredProvider {
   readonly descriptor: ProviderDescriptor;
+  toolSurface?(config:unknown):readonly ToolSchema[];
   validateConfig(raw: unknown): unknown;
-  createInstance(config: unknown): Promise<HarnessInstance>;
+  createInstance(config: unknown, context?: { readonly signal: AbortSignal }): Promise<HarnessInstance>;
 }
 export interface InstancePolicy {
   readonly subjects?: readonly string[];
   readonly allow?: readonly string[];
   readonly deny?: readonly string[];
+  readonly tools?: readonly string[];
 }
 export interface InstanceSpec {
   readonly id: string;
@@ -78,6 +90,10 @@ export interface InstanceSpec {
 export type ResourceState = 'released' | 'acquiring' | 'held' | 'releasing' | 'unconfirmed';
 export interface InstanceSnapshot {
   taskAccess: 'enabled' | 'revoked';
+  nextStartAt: number;
+  restartFailures: number;
+  canForceStop: boolean;
+  toolPublication?: ToolPublication;
   ownership: HarnessFeatures['processControl'];
   resourceState: ResourceState;
   id: string;
@@ -97,7 +113,7 @@ export interface RunResult extends AdmittedTask {
   readonly state: 'completed';
   readonly output: unknown;
 }
-export interface StopOptions { readonly graceMs?: number; readonly disable?: boolean }
+export interface StopOptions { readonly graceMs?: number; readonly disable?: boolean; readonly force?: boolean }
 export interface ManagerPort {
   run(id: string, request: TaskRequest, options?: RunOptions): Promise<RunResult>;
 }
@@ -113,3 +129,6 @@ export interface ToolTrace {
   readonly previewTruncated?: boolean;
   readonly errorCode?: string;
 }
+
+export interface ToolSchema {readonly name:string;readonly description:string;readonly parameters:Record<string,unknown>;readonly permissions:readonly string[]}
+export interface ToolPublication {readonly revision:string;readonly tools:readonly ToolSchema[]}

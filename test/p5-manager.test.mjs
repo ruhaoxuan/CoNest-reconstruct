@@ -34,7 +34,7 @@ test('fault marks interrupted, retains ownership and ignores notifications from 
   const run=m.run('a',task('wait'));const rejected=assert.rejects(run,e=>e.code==='RUN_INTERRUPTED');await entered.promise;
   aFailure('PROCESS_EXITED');await rejected;assert.equal(m.snapshot('a').state,'failed');assert.equal(m.snapshot('a').resourceState,'unconfirmed');
   await assert.rejects(m.run('a',task('blocked')));assert.equal((await m.run('b',task('healthy'))).state,'completed');
-  await m.stop('a');await m.start('a');const generation=m.snapshot('a').generation;aFailure('PROCESS_EXITED');
+  await m.stop('a');await new Promise(r=>setTimeout(r,Math.max(1,m.snapshot('a').nextStartAt-Date.now())));await m.start('a');const generation=m.snapshot('a').generation;aFailure('PROCESS_EXITED');
   assert.equal(m.snapshot('a').state,'ready');assert.equal(m.snapshot('a').generation,generation);
   await m.stop('a');await m.stop('b');
 });

@@ -9,6 +9,13 @@ export interface WorkspaceTool {
   parameters: Record<string, unknown>;
   execute(callId: string, args: unknown, signal: AbortSignal): Promise<unknown>;
 }
+const schema = (properties: Record<string, unknown>, required: string[]) => ({ type: 'object', properties, required, additionalProperties: false });
+const pathProperty = { type: 'string', description: 'Relative workspace path; hidden paths and symlinks are denied' };
+export const WORKSPACE_TOOL_SCHEMAS: readonly Pick<WorkspaceTool,'name'|'description'|'parameters'>[] = [
+ {name:'read_file',description:'Read a UTF-8 file up to 64KiB inside this instance workspace',parameters:schema({path:pathProperty},['path'])},
+ {name:'list_files',description:'List visible workspace entries, optionally recursively; bounded to 200 entries and 5 levels',parameters:schema({path:pathProperty,recursive:{type:'boolean'}},[])},
+ {name:'search_text',description:'Search visible UTF-8 workspace files using a literal, case-sensitive query; max 100 matching lines',parameters:schema({path:pathProperty,query:{type:'string',maxLength:256}},['query'])},
+];
 const MAX_BYTES = 65536, MAX_ENTRIES = 2000, MAX_FILES = 200;
 function allowed(name: string): boolean {
   return !name.startsWith('.') && name !== 'node_modules' && !/\.env(?:$|\.)/i.test(name);
@@ -92,8 +99,6 @@ export async function createWorkspaceTools(workspaceRoot: string): Promise<reado
     await visit(relative, 0); entries.sort((a, b) => a.path.localeCompare(b.path));
     return { entries, truncated };
   }
-  const schema = (properties: Record<string, unknown>, required: string[]) => ({ type: 'object', properties, required, additionalProperties: false });
-  const pathProperty = { type: 'string', description: 'Relative workspace path; hidden paths and symlinks are denied' };
   const result = (value: unknown) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
   const safe = (fn: (args: unknown, signal: AbortSignal) => Promise<unknown>) => async (_: string, args: unknown, signal: AbortSignal) => {
     try { return result(await fn(args, signal)); }
@@ -104,19 +109,16 @@ export async function createWorkspaceTools(workspaceRoot: string): Promise<reado
     }
   };
   return [
-    { name: 'read_file', description: 'Read a UTF-8 file up to 64KiB inside this instance workspace',
-      parameters: schema({ path: pathProperty }, ['path']), execute: safe(async (raw, signal) => {
+    { ...WORKSPACE_TOOL_SCHEMAS[0]!, execute: safe(async (raw, signal) => {
         const args = input(raw, ['path']); requireCondition(typeof args.path === 'string', 'INVALID_TOOL_ARGUMENT', 'path required');
         return read(args.path, signal);
       }) },
-    { name: 'list_files', description: 'List visible workspace entries, optionally recursively; bounded to 200 entries and 5 levels',
-      parameters: schema({ path: pathProperty, recursive: { type: 'boolean' } }, []), execute: safe(async (raw, signal) => {
+    { ...WORKSPACE_TOOL_SCHEMAS[1]!, execute: safe(async (raw, signal) => {
         const args = input(raw, ['path', 'recursive']);
         requireCondition(args.recursive === undefined || typeof args.recursive === 'boolean', 'INVALID_TOOL_ARGUMENT', 'recursive must be boolean');
         const located = await locate(args.path ?? '.', signal); return walk(located.relative, signal, args.recursive === true);
       }) },
-    { name: 'search_text', description: 'Search visible UTF-8 workspace files using a literal, case-sensitive query; max 100 matching lines',
-      parameters: schema({ path: pathProperty, query: { type: 'string', maxLength: 256 } }, ['query']), execute: safe(async (raw, signal) => {
+    { ...WORKSPACE_TOOL_SCHEMAS[2]!, execute: safe(async (raw, signal) => {
         const args = input(raw, ['path', 'query']);
         requireCondition(typeof args.query === 'string' && args.query.length > 0 && args.query.length <= 256, 'INVALID_TOOL_ARGUMENT', 'query must be 1..256 characters');
         const located = await locate(args.path ?? '.', signal);

@@ -1,5 +1,5 @@
 import type { AdmittedTask, MaybePromise } from '../types.mjs';
-export interface DshConfig { workspaceRoot: string; sessionPersistenceRoot: string; execution?: { maxParallelToolCalls: number }; model?: { name: string; credentialRef: string } }
+export interface DshConfig { workspaceRoot: string; sessionPersistenceRoot: string; execution?: { maxParallelToolCalls: number }; model?: { name: string; credentialRef: string }; composition?: {id:'workspace-readonly-v1';plugins:readonly string[]} }
 export interface ModelRoute { apiKey?: string; baseURL?: string }
 export interface HostTool {
   readonly name: string;
@@ -54,6 +54,7 @@ export interface RuntimeCall {
 export interface RuntimeClient {
   start(): Promise<unknown>;
   stop(): Promise<void>;
+  terminate?(): Promise<void>;
   extension(call: RuntimeCall): Promise<unknown>;
 }
 export type RuntimeClientConstructor = new (options: {

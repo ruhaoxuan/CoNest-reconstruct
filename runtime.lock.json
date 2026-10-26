@@ -9,5 +9,6 @@
   "pnpmLockSha256": "32340f3449a9efc2d5816b96d87d1eb6cf33fbdfd56baaf980b3427359420022",
   "node": ">=24.16.0 <25",
   "packageManager": "pnpm@11.7.0",
-  "workerProtocol": 4
+  "workerProtocol": 1,
+  "runtimeKind": "native-dsh-v1"
 }

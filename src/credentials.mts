@@ -50,6 +50,7 @@ export function guardCredentialInstance<T>(instance:HarnessInstance<T>,credentia
     setFailureHandler(handler){failure=handler;instance.setFailureHandler?.(handler);},
     async start(context){check();await instance.start(context);check();},
     async run(task,context){check();return instance.run(task,{...context,assertAuthorized(permission,tool){check();context.assertAuthorized(permission,tool);}});},
+    ...(instance.reconcileExecution?{async reconcileExecution(record,context){check();const result=await instance.reconcileExecution!(record,context);check();return result;}}:{}),
     async stop(){await instance.stop();unsubscribe?.();},
     ...(instance.terminate?{async terminate(){await instance.terminate!();unsubscribe?.();}}:{}),
   };

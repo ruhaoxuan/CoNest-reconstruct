@@ -19,11 +19,17 @@ test('coordinator crash restores admitted history and authorization without repl
  const first=await launch();await first.client.request('policy.update',{instanceId:'slow',policy:{subjects:['studio'],allow:[],deny:[]}});await first.client.request('instance.start',{instanceId:'slow'});
  const params={instanceId:'slow',input:'An admitted task before crash'},id='stable-crash-request';const admitted=await first.client.request('task.run',params,{id});
  first.child.kill('SIGKILL');await first.exited;
- const second=await launch();let state=await second.client.request('instance.list');assert.equal(state.jobs.length,1);assert.equal(state.jobs[0].id,admitted.jobId);assert.equal(state.jobs[0].state,'interrupted');assert.equal(state.jobs[0].executionState,'unknown');assert.equal(state.instances[0].state,'stopped');
+ const second=await launch();let state=await second.client.request('instance.list');assert.equal(state.jobs.length,1);assert.equal(state.jobs[0].id,admitted.jobId);assert.equal(state.jobs[0].state,'interrupted');assert.equal(state.jobs[0].executionState,'unknown');assert.equal(state.instances[0].state,'stopped');assert.equal(state.instances[0].admissionBlocked,true);
  assert.deepEqual((await second.client.request('policy.get',{instanceId:'slow'})).policy.subjects,['studio']);
  assert.deepEqual(await second.client.request('task.run',params,{id}),admitted);state=await second.client.request('instance.list');assert.equal(state.jobs.length,1);assert.equal(state.instances[0].activeRuns,0);
  await second.client.request('access.revoke',{instanceId:'slow'});second.child.kill('SIGTERM');assert.equal((await second.exited)[0],0);
  const third=await launch();state=await third.client.request('instance.list');assert.equal(state.instances[0].taskAccess,'revoked');await third.client.request('instance.start',{instanceId:'slow'});
  await assert.rejects(third.client.request('task.run',params),error=>error.code==='TASK_ACCESS_REVOKED');assert.equal((await third.client.request('instance.list')).jobs.length,1);
+ await third.client.request('access.restore',{instanceId:'slow'});await assert.rejects(third.client.request('task.run',params),error=>error.code==='RUN_OUTCOME_UNKNOWN');
+ const fence=(await third.client.request('execution.list')).records.find(r=>r.status==='uncertain');assert(fence);
+ await third.client.request('execution.acknowledge',{instanceId:'slow',runId:fence.runId,token:fence.token,acceptRisk:true});
+ state=await third.client.request('instance.list');assert.equal(state.instances[0].admissionBlocked,false);assert.equal(state.jobs[0].executionState,'acknowledged-unknown');
  third.child.kill('SIGTERM');assert.equal((await third.exited)[0],0);
+ const fourth=await launch();state=await fourth.client.request('instance.list');assert.equal(state.instances[0].admissionBlocked,false);assert.equal(state.jobs[0].executionState,'acknowledged-unknown');assert.equal(state.jobs.length,1);
+ fourth.child.kill('SIGTERM');assert.equal((await fourth.exited)[0],0);
 });

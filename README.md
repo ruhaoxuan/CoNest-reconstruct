@@ -16,7 +16,7 @@ npm run check
 npm run demo
 ```
 
-`npm test` checks types, builds and runs behavior tests. `test:types` proves that 18 deliberately invalid contracts are rejected. Core checks require no SDK, credentials or model service. `check` also checks JavaScript syntax and rejects direct framework imports outside `src/adapters/`. Scripts and JavaScript tests are runtime checked rather than fully statically typed.
+`npm test` checks types, builds and runs behavior tests. `test:types` proves that 26 deliberately invalid contracts are rejected. Core checks require no SDK, credentials or model service. `check` also checks JavaScript syntax and rejects direct framework imports outside `src/adapters/`. Scripts and JavaScript tests are runtime checked rather than fully statically typed.
 
 ## Prepare the optional native DSH support
 
@@ -92,6 +92,36 @@ Workspace/session roots must not overlap. Tools reject absolute/parent paths, hi
 - Credential revocation/rotation invalidates the old instance lease. Stop/recreate the instance; in-flight inference is not silently retargeted to a new key.
 
 Export the registered configuration schema using `npm run schema -- --out /absolute/path/schema.json`. `node scripts/config.mjs /absolute/config.json` validates and previews resolved configuration. The in-process configuration update API uses revision checks and requires a stopped instance; its file persistence helper supports a single-instance file, not an arbitrary multi-instance transaction editor.
+
+## Public V2 boundary and uncertain execution
+
+`HarnessManager.run()` retains native V1 output. `runV2()` accepts explicit `schemaVersion: 2`, text input and `session: {mode: "ephemeral"}`. Registered adapters provide trusted result/progress projections, followed by common runtime validation. Public results contain bounded text/JSON and optional reported usage; private SDK objects are excluded. Continuing sessions and confirmed-cancellation requirements are explicitly unsupported in this increment. Provider/RPC/native protocol versions remain separate.
+
+The default launcher uses `createStudioApplicationV2`. The original `createStudioApplication` and custom V1 `startStudio` hooks retain their result shape through a named compatibility boundary. Existing RPC V1 `task.run` still accepts a string and returns a job ID; its wire shape was not silently upgraded. Public tool events are normalized and audited as metadata without raw previews. The page shows final results and tool evidence; it does not yet provide a full streaming conversation UI.
+
+With `ManagerOptions.executions` wired to `LocalStateStore`, a synchronous SQLite execution intent is committed before native dispatch. An uncertain execution blocks new tasks even after the provider Promise settles, stop, permission restoration or coordinator restart. Outstanding intents become uncertain on recovery; they are never replayed. The default launcher wires this persistence. Embedded callers must wire it explicitly; a bare in-memory manager does not provide crash durability. Async persistence callbacks are rejected by both the type and runtime contracts.
+
+`execution.list` requires `state:read`. `execution.reconcile` and `execution.acknowledge` require `access:manage`. Reconciliation is a bounded, read-only provider query tied to the recorded provider/configuration identity and credential lease. Only a verified `settled` response confirms completion. DSH currently does not implement old-execution reconciliation; this is an extension hook, not a claim that native DSH recovery is already available.
+
+Acknowledgment requires the exact record token and `acceptRisk: true`, and local work must have settled. It unblocks admission while retaining **unknown actual execution status**. It does not terminate a remote task or undo side effects. Confirmation and acknowledgment receipts survive restart; unresolved entries are not silently evicted. The execution ledger has a 5000-record ceiling and needs explicit maintenance when exhausted. A record token is a concurrency value, not the Studio access token.
+
+Run the same acceptance cases against the synthetic provider and real DSH:
+
+```sh
+npm run test:conformance
+```
+
+A synthetic, no-charge UI exercise needs no SDK or Gateway:
+
+```sh
+node examples/execution-fences.mjs
+CONEST_RECONSTRUCT_MODE=proof \
+CONEST_RECONSTRUCT_CONFIG="$PWD/.local/fence-check/instances.json" \
+CONEST_RECONSTRUCT_STATE="$PWD/.local/fence-check" \
+CONEST_RECONSTRUCT_PORT=18806 npm run studio
+```
+
+Start `uncertain-demo` and submit any text to simulate unknown execution; `echo-demo` verifies instance isolation. Restart with the same state and verify the fence remains. The page requires an explicit risk checkbox before acknowledgment; read-only tokens cannot act. Re-running the generator refuses an existing config. Acknowledgment leaves the old task unknown, and another `uncertain-demo` task will deliberately produce another fence. Browser click/visual acceptance remains manual.
 
 ## Durable state and RPC
 

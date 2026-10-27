@@ -1,3 +1,5 @@
+import { parseExecutionFence } from './execution-journal.mjs';
+import type { ExecutionFence } from './execution-journal.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdir, open } from 'node:fs/promises';
 import path from 'node:path';
@@ -33,6 +35,7 @@ export class LocalStateStore {
       requireCondition(!alive,'STATE_IN_USE','Another coordinator owns this state directory');
       this.#db.prepare('INSERT OR REPLACE INTO lease(id,pid,token) VALUES(1,?,?)').run(process.pid,this.#lease);
       this.#db.exec('COMMIT');
+      this.#db.exec('CREATE TABLE IF NOT EXISTS executions(instance_id TEXT NOT NULL,run_id TEXT NOT NULL,token TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(instance_id,run_id))');
       const columns=this.#db.prepare('PRAGMA table_info(rpc)').all() as {name:string}[];
       if(!columns.some(c=>c.name==='completed'))this.#db.exec('ALTER TABLE rpc ADD COLUMN completed INTEGER NOT NULL DEFAULT 0');
       this.#db.exec('UPDATE rpc SET completed=1 WHERE response IS NOT NULL');
@@ -50,6 +53,30 @@ export class LocalStateStore {
       this.#db.prepare('INSERT INTO audit(value) VALUES(?)').run(JSON.stringify({at:new Date().toISOString(),type:'authorization.updated',instanceId:id}));
       this.#db.exec('DELETE FROM audit WHERE seq NOT IN (SELECT seq FROM audit ORDER BY seq DESC LIMIT 5000); COMMIT');
     }catch{try{this.#db.exec('ROLLBACK');}catch{}this.#status='failed';throw new HarnessError('STATE_WRITE_FAILED','Authorization was not durably saved');}
+  }
+  executionFences():ExecutionFence[]{
+    this.#assertLease();return (this.#db.prepare('SELECT value FROM executions').all() as {value:string}[]).map(row=>parseExecutionFence(JSON.parse(row.value)));
+  }
+  saveExecution(record:ExecutionFence):undefined{
+    try{
+      this.#assertLease();const value=parseExecutionFence(record);this.#db.exec('BEGIN IMMEDIATE');
+      const existing=this.#db.prepare('SELECT token FROM executions WHERE instance_id=? AND run_id=?').get(value.instanceId,value.runId) as {token:string}|undefined;
+      requireCondition(!existing||existing.token===value.token,'EXECUTION_CONFLICT','Execution identity changed');
+      requireCondition(Boolean(existing)||(this.#db.prepare('SELECT count(*) AS n FROM executions').get() as {n:number}).n<5000,'EXECUTION_LEDGER_FULL','Execution ledger is full');
+      this.#db.prepare('INSERT OR REPLACE INTO executions(instance_id,run_id,token,value) VALUES(?,?,?,?)').run(value.instanceId,value.runId,value.token,JSON.stringify(value));
+      this.#db.prepare('INSERT INTO audit(value) VALUES(?)').run(JSON.stringify({at:new Date().toISOString(),type:'execution.'+value.status,instanceId:value.instanceId,runId:value.runId,actor:value.acknowledgedBy}));
+      this.#db.exec('DELETE FROM audit WHERE seq NOT IN (SELECT seq FROM audit ORDER BY seq DESC LIMIT 5000); COMMIT');
+    }catch(error){try{this.#db.exec('ROLLBACK');}catch{}this.#status='failed';throw error instanceof HarnessError?error:new HarnessError('STATE_WRITE_FAILED','Execution journal not committed');}
+  }
+  removeExecution(record:ExecutionFence,evidence:'normal-settlement'|'provider-confirmed'):undefined{
+    try{
+      this.#assertLease();this.#db.exec('BEGIN IMMEDIATE');
+      const existing=this.#db.prepare('SELECT token FROM executions WHERE instance_id=? AND run_id=?').get(record.instanceId,record.runId) as {token:string}|undefined;
+      requireCondition(existing?.token===record.token,'EXECUTION_CONFLICT','Execution identity changed');
+      this.#db.prepare('DELETE FROM executions WHERE instance_id=? AND run_id=? AND token=?').run(record.instanceId,record.runId,record.token);
+      this.#db.prepare('INSERT INTO audit(value) VALUES(?)').run(JSON.stringify({at:new Date().toISOString(),type:'execution.'+evidence,instanceId:record.instanceId,runId:record.runId}));
+      this.#db.exec('DELETE FROM audit WHERE seq NOT IN (SELECT seq FROM audit ORDER BY seq DESC LIMIT 5000); COMMIT');
+    }catch(error){try{this.#db.exec('ROLLBACK');}catch{}this.#status='failed';throw error instanceof HarnessError?error:new HarnessError('STATE_WRITE_FAILED','Execution settlement not committed');}
   }
   credentialRevocations():string[]{return (this.#db.prepare('SELECT reference FROM credentials WHERE revoked=1').all() as {reference:string}[]).map(row=>row.reference);}
   async setCredentialRevoked(reference:string,revoked:boolean):Promise<void>{
@@ -80,10 +107,11 @@ export class LocalStateStore {
   saveJobs(jobs:unknown[]):void{this.#jobs=jobs.slice(-100);this.#schedule();}
   record(event:HarnessEvent):void{
     // Never retain prompts, headers, result previews or credential values in audit.
-    const raw=event.type==='provider.progress'&&event.data&&typeof event.data==='object'?event.data as Record<string,unknown>:undefined;
+    const raw=(event.type==='provider.progress'||event.type==='run.progress.v2')&&event.data&&typeof event.data==='object'?event.data as Record<string,unknown>:undefined;
     if(event.type==='provider.progress'&&raw?.kind!=='tool')return;
+    if(event.type==='run.progress.v2'&&!['tool.started','tool.finished'].includes(String(raw?.kind)))return;
     const value=this.#redact(JSON.stringify({at:event.at,type:event.type,instanceId:event.instanceId,generation:event.generation,runId:event.runId,sequence:event.sequence,subject:event.subject,permissions:event.permissions,tools:event.tools,publicationRevision:event.publicationRevision,
-      ...(raw?{tool:String(raw.name).slice(0,128),status:String(raw.status).slice(0,64)}:{})}));
+      ...(raw?{tool:String(raw.name).slice(0,128),status:raw.kind==='tool.started'?'running':String(raw.status).slice(0,64)}:{})}));
     if(this.#auditQueue.length>=1000){this.#status='failed';return;}
     this.#auditQueue.push(value);this.#schedule();
   }

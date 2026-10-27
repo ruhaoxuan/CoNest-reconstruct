@@ -1,4 +1,8 @@
-import { publishTools } from './publication.mjs';
+import { ExecutionJournal } from './execution-journal.mjs';
+import type { ExecutionFence, ExecutionPersistence } from './execution-journal.mjs';
+import { parseTaskRequestV2, parseTaskResultV2, parseProgressV2 } from './public-v2.mjs';
+import type { TaskResultV2 } from './public-v2.mjs';
+import { canonical, publishTools } from './publication.mjs';
 import { configSchema } from './config-schema.mjs';
 import { normalizePolicy, restrictPolicy } from './policy.mjs';
 import type { Policy } from './policy.mjs';
@@ -8,12 +12,13 @@ import type { ResolvedConfig } from './config.mjs';
 import type { HarnessRegistry } from './registry.mjs';
 import type { InstanceSpec, InstanceSnapshot, InstanceState, RegisteredProvider, HarnessInstance, TaskRequest, AdmittedTask, RunOptions, RunResult, HarnessEvent, StopOptions } from './types.mjs';
 type ActiveRun = { controller: AbortController; done: Promise<void> };
-type RecordState = { accessEpoch:number; uncertainRuns: Set<string>; acquisition: Acquisition | undefined; startController: AbortController | undefined; failures: number[]; nextStartAt: number; taskAccess: boolean; runtimeToken: string | undefined; cleanup: Promise<void> | undefined; id: string; provider: RegisteredProvider; config: unknown; ceiling: Policy; policy: Policy; enabled: boolean; state: InstanceState; instance: HarnessInstance | undefined; generation: string | undefined; queue: Promise<unknown>; runs: Map<string, ActiveRun>; pendingStops: number; lastError: string | undefined };
-import { randomUUID } from 'node:crypto';
+type RecordState = { accessEpoch:number; acquisition: Acquisition | undefined; startController: AbortController | undefined; failures: number[]; nextStartAt: number; taskAccess: boolean; runtimeToken: string | undefined; cleanup: Promise<void> | undefined; id: string; provider: RegisteredProvider; config: unknown; ceiling: Policy; policy: Policy; enabled: boolean; state: InstanceState; instance: HarnessInstance | undefined; generation: string | undefined; queue: Promise<unknown>; runs: Map<string, ActiveRun>; pendingStops: number; lastError: string | undefined };
+import { randomUUID, createHash } from 'node:crypto';
 import { HarnessError, freeze, identifier, milliseconds, names, requireCondition } from './contracts.mjs';
 
 export interface AuthorizationRecord { taskAccess: boolean; policy: Policy; baseRevision?: string; publishedTools?: readonly string[] }
 export interface ManagerOptions {
+  executions?:ExecutionPersistence;
   persistAuthorization?: (id: string, state: AuthorizationRecord) => Promise<void>;
   onEvent?: (event: HarnessEvent) => void;
 }
@@ -21,12 +26,13 @@ const error = (code: string, message: string) => new HarnessError(code, message)
 
 /** Minimal in-process control plane. Manager callers are trusted administrative callers. */
 export class HarnessManager {
+  #executions:ExecutionJournal;
   #registry: HarnessRegistry;
   #options: ManagerOptions;
   #adminQueues = new Map<string,Promise<unknown>>();
   #configs = new Map<string, ResolvedConfig>();
   #instances = new Map<string, RecordState>();
-  constructor(registry: HarnessRegistry, options: ManagerOptions = {}) { this.#registry = registry;this.#options=options; }
+  constructor(registry: HarnessRegistry, options: ManagerOptions = {}) { this.#registry = registry;this.#options=options;this.#executions=new ExecutionJournal(options.executions); }
 
   create(spec: InstanceSpec) {
     identifier(spec?.id, 'instance id');
@@ -35,7 +41,7 @@ export class HarnessManager {
     const config = freeze(structuredClone(provider.validateConfig(structuredClone(spec.config ?? {}))));
     const policy = freeze(normalizePolicy(spec.policy ?? {}));
     requireCondition(!policy.tools||provider.descriptor.features.externalToolMediation,'UNSUPPORTED_CAPABILITY','Provider cannot enforce a mediated tool policy');
-    const record: RecordState = { accessEpoch:0, uncertainRuns: new Set(), acquisition: undefined, startController: undefined, failures: [], nextStartAt: 0, taskAccess: true, runtimeToken: undefined, cleanup: undefined, id: spec.id, provider, config, ceiling: policy, policy, enabled: spec.enabled !== false,
+    const record: RecordState = { accessEpoch:0, acquisition: undefined, startController: undefined, failures: [], nextStartAt: 0, taskAccess: true, runtimeToken: undefined, cleanup: undefined, id: spec.id, provider, config, ceiling: policy, policy, enabled: spec.enabled !== false,
       state: spec.enabled === false ? 'disabled' : 'stopped', instance: undefined,
       generation: undefined, queue: Promise.resolve(), runs: new Map(), pendingStops: 0, lastError: undefined };
     this.#instances.set(spec.id, record);
@@ -78,8 +84,8 @@ export class HarnessManager {
     const r = this.#get(id);
     const control=this.#control(r).restart,recent=r.failures.filter(at=>at>Date.now()-control.windowMs);
     const nextStartAt=Math.max(r.nextStartAt,recent.length>=control.maxFailures?(recent[0]??0)+control.windowMs:0);
-    return { canForceStop:Boolean(r.instance&&r.provider.descriptor.features.processControl==='owned'&&r.provider.descriptor.features.hardTermination&&r.instance.terminate),...(this.#publication(r)?{toolPublication:this.#publication(r)}:{}),nextStartAt,restartFailures:recent.length,taskAccess: r.taskAccess ? 'enabled' : 'revoked', ownership: r.provider.descriptor.features.processControl,
-      resourceState: r.state === 'starting' ? 'acquiring' : ['stopping','draining'].includes(r.state) ? 'releasing' :
+    return { canReconcile:r.state==='ready'&&Boolean(r.instance?.reconcileExecution),admissionBlocked:this.#executions.blocked(id),unconfirmedRuns:this.#executions.list(id).filter(f=>f.status==='uncertain'||f.status==='acknowledged').length,canForceStop:Boolean(r.instance&&r.provider.descriptor.features.processControl==='owned'&&r.provider.descriptor.features.hardTermination&&r.instance.terminate),...(this.#publication(r)?{toolPublication:this.#publication(r)}:{}),nextStartAt,restartFailures:recent.length,taskAccess: r.taskAccess ? 'enabled' : 'revoked', ownership: r.provider.descriptor.features.processControl,
+      resourceState: this.#executions.list(id).some(f=>f.status==='uncertain'||f.status==='acknowledged') ? 'unconfirmed' : r.state === 'starting' ? 'acquiring' : ['stopping','draining'].includes(r.state) ? 'releasing' :
         r.instance || r.acquisition || r.runs.size ? r.state === 'failed' ? 'unconfirmed' : 'held' : 'released',
       id: r.id, provider: r.provider.descriptor.id, providerVersion: r.provider.descriptor.version,
       enabled: r.enabled, state: r.state, generation: r.generation, activeRuns: r.runs.size, lastError: r.lastError };
@@ -121,7 +127,28 @@ export class HarnessManager {
       return this.policy(id);
     });
   }
-  isRunUncertain(id:string,runId:string){return this.#get(id).uncertainRuns.has(runId);}
+  restoreExecutions(values:readonly unknown[]){this.#executions.restore(values);}
+  executionFences(id?:string){return this.#executions.list(id);}
+  executionState(id:string,runId:string){return this.#executions.get(id,runId)?.status;}
+  isRunUncertain(id:string,runId:string){return ['uncertain','acknowledged'].includes(this.executionState(id,runId)??'');}
+  acknowledgeExecution(id:string,runId:string,token:string,actor:string,acceptRisk:boolean){
+    requireCondition(acceptRisk===true,'INVALID_REQUEST','Explicit risk acceptance is required');
+    const r=this.#instances.get(id);requireCondition(!r||(!r.runs.size&&!r.pendingStops),'INSTANCE_BUSY','Local work must settle before acknowledgment');
+    this.#executions.acknowledge(id,runId,token,actor);return {acknowledged:true,executionState:'unknown',admissionBlocked:this.#executions.blocked(id)};
+  }
+  async reconcileExecution(id:string,runId:string,token:string){
+    const r=this.#get(id),record=this.#executions.get(id,runId),instance=r.instance,runtimeToken=r.runtimeToken;
+    requireCondition(record?.token===token&&['uncertain','acknowledged'].includes(record.status),'EXECUTION_CONFLICT','Execution fence changed');
+    requireCondition(instance?.reconcileExecution,'UNSUPPORTED_CAPABILITY','Provider cannot reconcile old execution');
+    requireCondition(r.state==='ready','INSTANCE_NOT_READY','Start a trusted runtime before reconciliation');
+    requireCondition(record.configRevision===this.#configurationIdentity(r),'EXECUTION_CONFLICT','Original configuration identity is not verified');
+    requireCondition(record.providerId===r.provider.descriptor.id&&record.providerVersion===r.provider.descriptor.version,'EXECUTION_CONFLICT','Provider identity differs');
+    const controller=new AbortController();const result=await deadline(instance.reconcileExecution(structuredClone(record),{signal:controller.signal}),5000,'RECONCILE_TIMEOUT',controller);
+    requireCondition(r.instance===instance&&r.runtimeToken===runtimeToken&&r.state==='ready','EXECUTION_CONFLICT','Runtime changed during reconciliation');
+    requireCondition(result&&['settled','running','unknown'].includes(result.status),'INVALID_RESPONSE','Malformed reconciliation result');
+    if(result.status==='settled')this.#executions.confirm(id,runId,token);
+    return {status:result.status,admissionBlocked:this.#executions.blocked(id)};
+  }
   isRunActive(id: string, runId: string): boolean { return this.#get(id).runs.has(runId); }
   setTaskAccess(id: string, allowed: boolean) {
     requireCondition(typeof allowed === 'boolean', 'INVALID_REQUEST', 'Task access must be boolean');
@@ -129,6 +156,7 @@ export class HarnessManager {
     if (!allowed) for (const run of r.runs.values()) run.controller.abort(error('RUN_REVOKED', 'Instance task access revoked'));
     return this.snapshot(id);
   }
+  #configurationIdentity(r:RecordState){return this.#configs.get(r.id)?.revision??createHash('sha256').update(canonical(r.config)).digest('hex');}
   #control(r: RecordState) { return this.#configs.get(r.id)?.control ?? DEFAULT_CONTROL; }
   #recordFailure(r: RecordState) {
     const control=this.#control(r).restart,now=Date.now();
@@ -163,6 +191,7 @@ export class HarnessManager {
           if (r.instance !== instance || r.runtimeToken !== token) return;
           if(this.snapshot(r.id).state!=='failed')this.#recordFailure(r);
           r.state = 'failed'; r.lastError = ['PROCESS_EXITED','TRANSPORT_LOST','CREDENTIAL_REVOKED','CREDENTIAL_STALE'].includes(code) ? code : 'TRANSPORT_LOST';
+          if(r.provider.descriptor.features.processControl!=='owned')for(const record of this.#executions.list(id))if(record.status==='in-flight'){try{this.#executions.uncertain(record);}catch{r.lastError='STATE_WRITE_FAILED';}}
           for (const run of r.runs.values()) run.controller.abort(error(code.startsWith('CREDENTIAL_')?'RUN_REVOKED':'RUN_INTERRUPTED', 'Instance runtime became unavailable'));
         });
         requireCondition(typeof r.instance.start === 'function' && typeof r.instance.run === 'function' && typeof r.instance.stop === 'function',
@@ -229,7 +258,7 @@ export class HarnessManager {
       };
       try {
         await within(Promise.all([...r.runs.values()].map(run => run.done)));
-        if (!r.instance) { r.uncertainRuns.clear();r.state = r.enabled ? 'stopped' : 'disabled'; r.lastError = undefined; return this.snapshot(id); }
+        if (!r.instance) { r.state = r.enabled ? 'stopped' : 'disabled'; r.lastError = undefined; return this.snapshot(id); }
         r.state = 'stopping';
         if (!r.cleanup) {
           const instance = r.instance, token = r.runtimeToken;
@@ -243,7 +272,7 @@ export class HarnessManager {
           }, () => { if (r.cleanup === cleanup) r.cleanup = undefined; });
         }
         await within(r.cleanup);
-        r.uncertainRuns.clear();r.state = r.enabled ? 'stopped' : 'disabled'; r.lastError = undefined;
+        r.state = r.enabled ? 'stopped' : 'disabled'; r.lastError = undefined;
       } catch (cause) {
         if(force&&r.instance){
           const instance=r.instance;
@@ -264,7 +293,15 @@ export class HarnessManager {
   }
   disable(id: string, options: StopOptions = {}) { return this.stop(id, { ...options, disable: true }); }
 
-  async run(id: string, request: TaskRequest, { signal, onEvent = () => {} }: RunOptions = {}): Promise<RunResult> {
+  run(id:string,request:TaskRequest,options:RunOptions={}):Promise<RunResult>{return this.#run(id,request,options,false);}
+  async runV2(id:string,raw:unknown,options:RunOptions={}):Promise<RunResult & {output:TaskResultV2}>{
+    const request=parseTaskRequestV2(raw),provider=this.#get(id).provider;
+    requireCondition(provider.projectResult,'UNSUPPORTED_CAPABILITY','Provider has no public V2 projection');
+    requireCondition(!request.requirements?.mediatedTools||provider.descriptor.features.externalToolMediation,'UNSUPPORTED_CAPABILITY','Provider cannot mediate tools');
+    const result=await this.#run(id,{runId:request.runId,subject:request.subject,input:request.input.text,permissions:request.permissions,timeoutMs:request.timeoutMs},options,true);
+    return {...result,output:parseTaskResultV2(result.output)};
+  }
+  async #run(id: string, request: TaskRequest, { signal, onEvent = () => {} }: RunOptions, publicMode:boolean): Promise<RunResult> {
     const r = this.#get(id);
     requireCondition(r.enabled && r.state === 'ready' && r.pendingStops === 0, 'INSTANCE_NOT_READY', 'Instance does not accept tasks');
     requireCondition(r.taskAccess, 'TASK_ACCESS_REVOKED', 'Instance task access is revoked');
@@ -283,18 +320,19 @@ export class HarnessManager {
       'PERMISSION_DENIED', 'Requested permissions exceed the instance policy');
     requireCondition(!r.runs.has(request.runId), 'DUPLICATE_RUN', 'Run is already active');
     signal?.throwIfAborted();
+    const execution=this.#executions.admit({instanceId:id,runId:request.runId,generation,configRevision:this.#configurationIdentity(r),providerId:r.provider.descriptor.id,providerVersion:r.provider.descriptor.version,subject:request.subject});
     const controller = new AbortController();
     const abort = () => controller.abort(signal?.reason ?? error('RUN_CANCELLED', 'Caller cancelled'));
     signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => controller.abort(error('RUN_TIMEOUT', 'Task deadline exceeded')), timeoutMs);
     const admitted: AdmittedTask = freeze({ instanceId: r.id, generation, runId: request.runId,
       subject: request.subject, input: request.input, permissions: requested, expiresAt: Date.now() + timeoutMs,...(this.#publication(r)?{toolPublication:this.#publication(r)}:{}),...(r.policy.tools?{tools:[...r.policy.tools]}:{}) });
-    let finished!: () => void; let sequence = 0, live = true;
+    let finished!: () => void; let sequence = 0, live = true;let projectionError:unknown;
     const record = { controller, done: new Promise<void>(resolve => { finished = resolve; }) };
     r.runs.set(request.runId, record);
     const emit = (type: HarnessEvent['type'], data?: unknown) => {
       const event = freeze({ instanceId: r.id, generation: admitted.generation, runId: admitted.runId,
-        sequence: ++sequence, at: new Date().toISOString(),...(type==='run.started'?{subject:admitted.subject,permissions:admitted.permissions,tools:admitted.tools,publicationRevision:admitted.toolPublication?.revision}:{}), ...(type === 'provider.progress' ? { type, data } : { type }) }) as HarnessEvent;
+        sequence: ++sequence, at: new Date().toISOString(),...(type==='run.started'?{subject:admitted.subject,permissions:admitted.permissions,tools:admitted.tools,publicationRevision:admitted.toolPublication?.revision}:{}), ...((type === 'provider.progress'||type === 'run.progress.v2') ? { type, data } : { type }) }) as HarnessEvent;
       // Observers are not execution authorities. Sync or async observer failure cannot fail a run.
       try { this.#options.onEvent?.(event); } catch {}
       try { Promise.resolve(onEvent(event)).catch(() => {}); } catch {}
@@ -302,7 +340,7 @@ export class HarnessManager {
     emit('run.started');
     const work = Promise.resolve().then(() => {
       controller.signal.throwIfAborted();
-      return instance.run(admitted, { signal: controller.signal, markUncertain:()=>{r.uncertainRuns.add(admitted.runId);if(r.uncertainRuns.size>1000)r.uncertainRuns.delete(r.uncertainRuns.values().next().value!);},
+      return instance.run(admitted, { signal: controller.signal, markUncertain:()=>{requireCondition(r.runs.has(admitted.runId)&&this.#executions.current(execution),'CALLBACK_EXPIRED','Execution already settled');try{this.#executions.uncertain(execution);}finally{controller.abort(error('RUN_OUTCOME_UNKNOWN','Native execution is uncertain'));}},
         assertAuthorized: (permission,tool) => {
           controller.signal.throwIfAborted();
           requireCondition(live && r.instance === instance && r.generation === generation, 'AUTHORITY_REVOKED', 'Task authority is no longer active');
@@ -314,10 +352,10 @@ export class HarnessManager {
           requireCondition(r.policy.subjects.includes(admitted.subject),'SUBJECT_DENIED','Subject revoked');
           requireCondition(Date.now() < admitted.expiresAt, 'RUN_TIMEOUT', 'Task deadline expired');
         },
-        emit: data => { if (live && !controller.signal.aborted) emit('provider.progress', structuredClone(data)); } });
-    });
+        emit: data => { if (live && !controller.signal.aborted) {if(publicMode){try{const progress=r.provider.projectProgress?.(data);if(progress!==undefined)emit('run.progress.v2',parseProgressV2(progress));}catch{projectionError=error('INVALID_PROVIDER_EVENT','Provider event projection failed');throw projectionError;}}else emit('provider.progress', structuredClone(data));} } });
+    }).then(output=>{if(projectionError)throw projectionError;if(!publicMode)return output;try{return parseTaskResultV2(r.provider.projectResult!(output));}catch{throw error('INVALID_PROVIDER_RESULT','Provider result projection failed');}});
     // Keep tracking actual provider settlement even after caller cancellation/timeout.
-    const release = () => { r.runs.delete(admitted.runId); finished(); };
+    const release = () => { this.#executions.settle(execution);if(this.#executions.get(id,admitted.runId)?.status==='uncertain')controller.abort(error('RUN_OUTCOME_UNKNOWN','Execution settlement is not confirmed'));r.runs.delete(admitted.runId); finished(); };
     work.then(release, release);
     let cancelListener: (() => void) | undefined;
     try {
@@ -332,10 +370,10 @@ export class HarnessManager {
       emit('run.completed');
       return result;
     } catch (cause) {
-      const code = controller.signal.aborted
+      const code = this.#executions.get(id,admitted.runId)?.status==='uncertain' ? 'RUN_OUTCOME_UNKNOWN' : controller.signal.aborted
         ? controller.signal.reason instanceof HarnessError ? controller.signal.reason.code : 'RUN_CANCELLED'
-        : cause instanceof HarnessError && ['RUN_TIMEOUT','RUN_REVOKED','RUN_INTERRUPTED','RUN_CANCELLED'].includes(cause.code) ? cause.code : 'RUN_FAILED';
-      emit(code === 'RUN_TIMEOUT' ? 'run.timed-out' : code === 'RUN_REVOKED' ? 'run.revoked' : code === 'RUN_INTERRUPTED' ? 'run.interrupted' : code === 'RUN_CANCELLED' || controller.signal.aborted ? 'run.cancelled' : 'run.failed');
+        : cause instanceof HarnessError && ['RUN_TIMEOUT','RUN_REVOKED','RUN_INTERRUPTED','RUN_CANCELLED','INVALID_PROVIDER_RESULT','INVALID_PROVIDER_EVENT','RUN_OUTCOME_UNKNOWN'].includes(cause.code) ? cause.code : 'RUN_FAILED';
+      emit(code === 'RUN_OUTCOME_UNKNOWN' ? 'run.uncertain' : code === 'RUN_TIMEOUT' ? 'run.timed-out' : code === 'RUN_REVOKED' ? 'run.revoked' : code === 'RUN_INTERRUPTED' ? 'run.interrupted' : code === 'RUN_CANCELLED' || controller.signal.aborted ? 'run.cancelled' : 'run.failed');
       throw error(code, 'Harness task did not complete successfully');
     } finally {
       live = false; clearTimeout(timer);

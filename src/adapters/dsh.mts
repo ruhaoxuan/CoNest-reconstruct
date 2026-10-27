@@ -1,3 +1,4 @@
+import { dshPublicResult, dshPublicProgress } from './public-projection.mjs';
 import { DSH_CONFIG_SCHEMA, WORKSPACE_PLUGINS } from './dsh-config.mjs';
 import { publishTools } from '../publication.mjs';
 import { object, fields } from '../config.mjs';
@@ -16,6 +17,7 @@ import { loadPinnedClient } from './pinned-runtime.mjs';
 export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute, redact = text => text, proofMode = false, loadClient = loadPinnedClient }: DshProviderOptions): HarnessProvider<DshConfig> {
   requireCondition(typeof resolveTurn === 'function', 'INVALID_PROVIDER', 'A trusted turn resolver is required');
   return {
+    projectResult:dshPublicResult,projectProgress:dshPublicProgress,
     configContract: { version: 1, schema:DSH_CONFIG_SCHEMA, fields: [ { path: 'workspaceRoot', scope: 'dsh.workspace', update: 'immutable' }, { path: 'sessionPersistenceRoot', scope: 'dsh.storage', update: 'immutable' }, { path: 'composition', scope:'dsh.host-tool-surface',update:'restart-required' }, { path: 'model', scope: 'dsh.model-route', update: 'restart-required' }, { path: 'execution.maxParallelToolCalls', scope: 'dsh.agent-loop', update: 'restart-required' } ] },
     id: 'dsh', version: '0.2.0', protocolVersion: PROTOCOL_VERSION,
     features: { cooperativeCancel: true, processControl: 'owned', resume: true,

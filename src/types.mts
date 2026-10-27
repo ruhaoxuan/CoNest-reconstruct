@@ -1,3 +1,5 @@
+import type { TaskResultV2, ProgressV2 } from './public-v2.mjs';
+import type { ExecutionFence } from './execution-journal.mjs';
 /** Public framework-independent control-plane contracts. */
 export type MaybePromise<T> = T | Promise<T>;
 export type InstanceState = 'disabled' | 'stopped' | 'starting' | 'ready' | 'draining' | 'stopping' | 'failed';
@@ -47,7 +49,8 @@ interface EventBase {
 }
 export type HarnessEvent = EventBase & (
   | { readonly type: 'provider.progress'; readonly data: unknown }
-  | { readonly type: 'run.started' | 'run.completed' | 'run.timed-out' | 'run.cancelled' | 'run.failed' | 'run.revoked' | 'run.interrupted'; readonly data?: never }
+  | { readonly type: 'run.progress.v2'; readonly data: ProgressV2 }
+  | { readonly type: 'run.started' | 'run.completed' | 'run.timed-out' | 'run.cancelled' | 'run.failed' | 'run.revoked' | 'run.interrupted' | 'run.uncertain'; readonly data?: never }
 );
 export interface ExecutionContext {
   readonly markUncertain: () => void;
@@ -60,16 +63,21 @@ export interface HarnessInstance<Output = unknown> {
   setFailureHandler?(handler: ((code: InstanceFailureCode) => void) | undefined): void;
   start(context?: {readonly signal: AbortSignal}): Promise<void>;
   run(task: AdmittedTask, context: ExecutionContext): Promise<Output>;
+  reconcileExecution?(record:ExecutionFence, context:{readonly signal:AbortSignal}):Promise<{readonly status:'settled'|'running'|'unknown'}>;
   stop(): Promise<void>;
   terminate?(): Promise<void>;
 }
 export interface HarnessProvider<Config = unknown, Output = unknown> extends ProviderDescriptor {
+  projectResult?(raw:unknown):TaskResultV2;
+  projectProgress?(raw:unknown):ProgressV2|undefined;
   toolSurface?(config:Config):readonly ToolSchema[];
   validateConfig(raw: unknown): Config;
   createInstance(config: Config, context?: { readonly signal: AbortSignal }): Promise<HarnessInstance<Output>>;
 }
 export interface RegisteredProvider {
   readonly descriptor: ProviderDescriptor;
+  projectResult?(raw:unknown):TaskResultV2;
+  projectProgress?(raw:unknown):ProgressV2|undefined;
   toolSurface?(config:unknown):readonly ToolSchema[];
   validateConfig(raw: unknown): unknown;
   createInstance(config: unknown, context?: { readonly signal: AbortSignal }): Promise<HarnessInstance>;
@@ -89,6 +97,9 @@ export interface InstanceSpec {
 }
 export type ResourceState = 'released' | 'acquiring' | 'held' | 'releasing' | 'unconfirmed';
 export interface InstanceSnapshot {
+  canReconcile?:boolean;
+  unconfirmedRuns?:number;
+  admissionBlocked?:boolean;
   taskAccess: 'enabled' | 'revoked';
   nextStartAt: number;
   restartFailures: number;

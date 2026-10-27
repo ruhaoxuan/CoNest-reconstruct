@@ -9,7 +9,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createEnvironmentCredentials } from '../../dist/credentials.mjs';
 import { createLiveStudioProviders } from '../../dist/adapters/studio-live.mjs';
-import { createStudioApplication } from '../../dist/studio/application.mjs';
+import { createStudioApplicationV2 as createStudioApplication } from '../../dist/studio/application.mjs';
 import { startStudio } from '../../dist/studio/server.mjs';
 
 test('offline live transport -> real DSH -> workspace tools: independent files, denial, traces and cancellation', { timeout: 60000 }, async t => {

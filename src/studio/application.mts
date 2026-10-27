@@ -32,7 +32,9 @@ export async function readStudioConfig(file: string): Promise<string> {
   } finally { await handle.close(); }
 }
 
-export function createStudioApplication(text: string, definitions: readonly StudioProvider[], options: ManagerOptions = {}) {
+export function createStudioApplication(text:string,definitions:readonly StudioProvider[],options:ManagerOptions={}){return application(text,definitions,options,false);}
+export function createStudioApplicationV2(text:string,definitions:readonly StudioProvider[],options:ManagerOptions={}){return application(text,definitions,options,true);}
+function application(text: string, definitions: readonly StudioProvider[], options: ManagerOptions, publicMode:boolean) {
   const registry = new HarnessRegistry();
   const entries = new Map<string, StudioProvider>();
   for (const entry of definitions) {
@@ -47,11 +49,14 @@ export function createStudioApplication(text: string, definitions: readonly Stud
     id: spec.id, provider: spec.provider, providerConfigVersion: 1,
     enabled: spec.enabled, policy: spec.policy, control, providerConfig: spec.config,
   });
-  return { manager, async submitTask(id: string, input: string, signal: AbortSignal, onEvent?: (event: HarnessEvent) => void): Promise<unknown> {
+  return { manager, publicResults:publicMode, async submitTask(id: string, input: string, signal: AbortSignal, onEvent?: (event: HarnessEvent) => void, admission?:{readonly runId:string}): Promise<unknown> {
     const entry = entries.get(manager.snapshot(id).provider);
     requireCondition(entry, 'PROVIDER_NOT_FOUND', 'Studio provider is unavailable');
-    const result = await manager.run(id, { runId: randomUUID(), subject: 'studio',
-      input: entry.validateInput(input), permissions: entry.permissionsFor?.(manager.configured(id)?.spec.config)??entry.permissions }, { signal, onEvent });
+    const request={runId:admission?.runId??randomUUID(),subject:'studio',input:entry.validateInput(input),permissions:entry.permissionsFor?.(manager.configured(id)?.spec.config)??entry.permissions};
+    const provider=registry.resolve(manager.snapshot(id).provider);
+    if(!publicMode)return (await manager.run(id,request,{signal,onEvent})).output;
+    if(!provider.projectResult)throw new Error('UNSUPPORTED_CAPABILITY: register a public result projection');
+    const result=await manager.runV2(id,{schemaVersion:2,...request,input:{type:'text',text:request.input},session:{mode:'ephemeral'}},{signal,onEvent});
     return result.output;
   } };
 }

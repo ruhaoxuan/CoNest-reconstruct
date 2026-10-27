@@ -1,3 +1,5 @@
+import { parseTaskResultV2, publicText } from '../public-v2.mjs';
+import { legacyStudioText } from './compat-v1.mjs';
 import { createServer, type IncomingMessage } from 'node:http';
 import { RPC_METHODS, RPC_VERSION } from '../rpc.mjs';
 import { canonical } from '../publication.mjs';
@@ -10,10 +12,11 @@ import type { LocalStateStore } from '../state-store.mjs';
 import { page } from './page.mjs';
 
 export type Trace = { at: string; runId: string; sequence: number; type: string; name?: string; callId?: string; status?: string; durationMs?: number; preview?: string; errorCode?: string; previewTruncated?: boolean };
-type Job = { historical?:boolean;storedExecutionState?:string; recovered?: boolean; runId?: string; cancelRequested: boolean; resultTruncated: boolean; events: Trace[]; droppedEvents: number; id: string; instanceId: string; state: 'running'|'completed'|'cancelled'|'failed'|'timed-out'|'revoked'|'interrupted'; startedAt: string; text: string; controller: AbortController; done: Promise<void> };
+type Job = { admitted?:boolean; historical?:boolean;storedExecutionState?:string; recovered?: boolean; runId?: string; cancelRequested: boolean; resultTruncated: boolean; events: Trace[]; droppedEvents: number; id: string; instanceId: string; state: 'running'|'completed'|'cancelled'|'failed'|'timed-out'|'revoked'|'interrupted'|'uncertain'; startedAt: string; text: string; controller: AbortController; done: Promise<void> };
 export type StudioPermission = 'state:read' | 'instance:control' | 'task:run' | 'task:cancel' | 'access:manage';
 export const STUDIO_PERMISSIONS: readonly StudioPermission[] = Object.freeze(['state:read','instance:control','task:run','task:cancel','access:manage']);
 export interface StudioOptions {
+  publicResults?:boolean;
   store?: LocalStateStore;
   credentialControl?: (reference:string,revoked:boolean)=>Promise<void>;
   additionalTokens?: readonly { token: string; permissions: readonly StudioPermission[] }[];
@@ -22,7 +25,7 @@ export interface StudioOptions {
   port?: number;
   mode: 'proof' | 'live';
   redact?: (text: string) => string;
-  submitTask(instanceId: string, input: string, signal: AbortSignal, onEvent?: (event: HarnessEvent) => void): Promise<unknown>;
+  submitTask(instanceId: string, input: string, signal: AbortSignal, onEvent?: (event: HarnessEvent) => void, admission?:{readonly runId:string}): Promise<unknown>;
 }
 async function body(req: IncomingMessage): Promise<Record<string,unknown>> {
   let text='';for await(const chunk of req){text+=String(chunk);requireCondition(Buffer.byteLength(text)<=16000,'INVALID_REQUEST','Request exceeds 16KB');}
@@ -38,12 +41,20 @@ export async function startStudio(options: StudioOptions) {
   const rpcCache=new Map<string,{fingerprint:string,response?:string,completed?:boolean}>();
   const jobs=new Map<string,Job>();let closing=false;
   for(const raw of options.store?.restoredJobs()??[]){const value=raw as Job;requireCondition(typeof value.id==='string'&&typeof value.instanceId==='string'&&Array.isArray(value.events),'STATE_INVALID','Invalid stored job');jobs.set(value.id,{...value,controller:new AbortController(),done:Promise.resolve(),historical:true,recovered:value.recovered===true,storedExecutionState:(value as unknown as {executionState?:string}).executionState??'unknown'});}
-  const execution=(job:Job):string=>job.historical?job.storedExecutionState??'unknown':job.runId&&options.manager.isRunUncertain(job.instanceId,job.runId)?'unknown':job.runId?options.manager.isRunActive(job.instanceId,job.runId)?'active':'settled':job.state==='running'?'pending':'not-admitted';
+  const execution=(job:Job):string=>{
+    const recorded=options.manager.executionState(job.instanceId,job.runId??job.id);
+    if(recorded==='confirmed-ended')return 'settled';
+    if(recorded==='acknowledged')return 'acknowledged-unknown';
+    if(recorded==='uncertain')return 'unknown';
+    if(job.historical)return job.storedExecutionState??'unknown';
+    if(job.admitted===false)return job.state==='running'?'pending':'not-admitted';
+    return job.runId?options.manager.isRunActive(job.instanceId,job.runId)?'active':'settled':job.state==='running'?'pending':'not-admitted';
+  };
   const saved=()=>[...jobs.values()].map(job=>{const {controller,done,...rest}=job;return {...rest,executionState:execution(job)};});
   const persist=()=>options.store?.saveJobs(saved());
   const digest=(s:string)=>createHash('sha256').update(s).digest();
   const nonce=randomUUID();
-  const snapshot=(permissions: readonly StudioPermission[])=>({mode:options.mode,permissions,storage:options.store?.status(),instances:options.manager.list(),jobs:saved()});
+  const snapshot=(permissions: readonly StudioPermission[])=>({mode:options.mode,permissions,storage:options.store?.status(),executionFences:options.manager.executionFences(),instances:options.manager.list(),jobs:saved()});
   const server=createServer(async(req,res)=>{
     res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('Content-Security-Policy',`default-src 'self'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`);
@@ -77,7 +88,7 @@ export async function startStudio(options: StudioOptions) {
         if(route.read&&typeof rpcBody.instanceId==='string')url.searchParams.set('instanceId',rpcBody.instanceId);if(route.read&&rpcBody.limit!==undefined)url.searchParams.set('limit',String(rpcBody.limit));
       }
 
-      const permission: StudioPermission | undefined = method==='GET'&&['/api/state','/api/schema','/api/audit'].includes(url.pathname) ? 'state:read' : ({'/api/start':'instance:control','/api/stop':'instance:control','/api/run':'task:run','/api/cancel':'task:cancel','/api/revoke':'access:manage','/api/restore':'access:manage','/api/policy':'access:manage','/api/reset-restarts':'access:manage','/api/credential-revoke':'access:manage','/api/credential-restore':'access:manage'} as Record<string,StudioPermission>)[url.pathname];
+      const permission: StudioPermission | undefined = method==='GET'&&['/api/state','/api/schema','/api/audit','/api/executions'].includes(url.pathname) ? 'state:read' : ({'/api/start':'instance:control','/api/stop':'instance:control','/api/run':'task:run','/api/cancel':'task:cancel','/api/revoke':'access:manage','/api/restore':'access:manage','/api/policy':'access:manage','/api/reset-restarts':'access:manage','/api/credential-revoke':'access:manage','/api/credential-restore':'access:manage','/api/execution-reconcile':'access:manage','/api/execution-acknowledge':'access:manage'} as Record<string,StudioPermission>)[url.pathname];
       if(permission&&!permissions.includes(permission)){res.writeHead(403);res.end(encode({error:'MANAGEMENT_DENIED'}));return;}
       if(rpcBody&&method==='POST'){
         ledgerKey=[...permissions].sort().join(',')+':'+rpcId;const fingerprint=createHash('sha256').update(canonical({route:url.pathname,params:rpcBody})).digest('hex');
@@ -88,6 +99,7 @@ export async function startStudio(options: StudioOptions) {
         requireCondition(rpcCache.size<50000,'RPC_LEDGER_FULL','Request ledger full');if([...rpcCache.values()].filter(v=>v.response).length>=512){const old=[...rpcCache.values()].find(v=>v.response);if(old)old.response=undefined;}
         ledgerEntry={fingerprint};rpcCache.set(ledgerKey,ledgerEntry);options.store?.recordControl({type:'rpc.request',requestId:rpcId,method:url.pathname,instanceId:typeof rpcBody.instanceId==='string'?rpcBody.instanceId:undefined});
       }
+      if(method==='GET'&&url.pathname==='/api/executions'){res.end(encode({records:options.manager.executionFences()}));return;}
       if(method==='GET'&&url.pathname==='/api/audit'){const limit=Number(url.searchParams.get('limit')??100);requireCondition(Number.isInteger(limit)&&limit>=1&&limit<=5000,'INVALID_REQUEST','Audit limit must be 1..5000');options.store?.flush();res.end(encode({available:Boolean(options.store),records:options.store?.audit(limit)??[]}));return;}
       if(method==='GET'&&url.pathname==='/api/schema'){res.end(encode(options.manager.configSchema()));return;}
       if(method==='GET'&&url.pathname==='/api/policy'){res.end(encode({policy:options.manager.policy(url.searchParams.get('instanceId')??'')}));return;}
@@ -102,6 +114,7 @@ export async function startStudio(options: StudioOptions) {
       }
       if(['/api/credential-revoke','/api/credential-restore'].includes(url.pathname)){requireCondition(options.credentialControl&&typeof data.reference==='string','INVALID_REQUEST','Credential reference required');await options.credentialControl(data.reference,url.pathname.endsWith('revoke'));res.end(encode({accepted:true}));return;}
       requireCondition(typeof data.instanceId==='string','INVALID_REQUEST','Instance id required');const id=data.instanceId;
+      if(['/api/execution-reconcile','/api/execution-acknowledge'].includes(url.pathname)){requireCondition(typeof data.runId==='string'&&typeof data.token==='string','INVALID_REQUEST','Execution identity and token required');const result=url.pathname.endsWith('reconcile')?await options.manager.reconcileExecution(id,data.runId,data.token):options.manager.acknowledgeExecution(id,data.runId,data.token,'studio',data.acceptRisk===true);res.end(encode(result));return;}
       if(url.pathname==='/api/start'){await options.manager.start(id);}
       else if(url.pathname==='/api/stop'){for(const job of jobs.values())if(job.instanceId===id&&job.state==='running'){job.cancelRequested=true;job.controller.abort();}await options.manager.stop(id,{force:data.force===true});}
       else if(url.pathname==='/api/revoke'){await options.manager.updateAccess(id,false);}
@@ -111,15 +124,17 @@ export async function startStudio(options: StudioOptions) {
       else if(url.pathname==='/api/run'){
         requireCondition(options.manager.snapshot(id).state==='ready','INSTANCE_NOT_READY','Start the instance first');
         requireCondition(options.manager.snapshot(id).taskAccess==='enabled','TASK_ACCESS_REVOKED','Task access is revoked');
+        requireCondition(!options.manager.snapshot(id).admissionBlocked,'RUN_OUTCOME_UNKNOWN','Reconcile uncertain execution before submitting');
         requireCondition(options.manager.snapshot(id).activeRuns===0,'INSTANCE_BUSY','Previous work has not settled');
         requireCondition(typeof data.input==='string'&&Buffer.byteLength(data.input)<=8000,'INVALID_REQUEST','Input must be at most 8KB');
         requireCondition(![...jobs.values()].some(j=>j.instanceId===id&&j.state==='running'),'INSTANCE_BUSY','One Studio job per instance at a time');
         if(jobs.size>=100){const oldest=[...jobs.values()].find(j=>j.state!=='running');requireCondition(oldest,'INSTANCE_BUSY','Job limit reached');jobs.delete(oldest.id);}
         const controller=new AbortController();
-        const job:Job={cancelRequested:false,resultTruncated:false,events:[],droppedEvents:0,id:randomUUID(),instanceId:id,state:'running',startedAt:new Date().toISOString(),text:'',controller,done:Promise.resolve()};jobs.set(job.id,job);try{options.store?.commitJobs(saved());}catch(error){jobs.delete(job.id);throw error;}
+        const job:Job={...(options.publicResults?{runId:randomUUID(),admitted:false}:{}),cancelRequested:false,resultTruncated:false,events:[],droppedEvents:0,id:randomUUID(),instanceId:id,state:'running',startedAt:new Date().toISOString(),text:'',controller,done:Promise.resolve()};jobs.set(job.id,job);try{options.store?.commitJobs(saved());}catch(error){jobs.delete(job.id);throw error;}
         const onEvent = (event: HarnessEvent) => {
-          if(event.type==='run.started')job.runId=event.runId;
+          if(event.type==='run.started'){job.runId=event.runId;job.admitted=true;}
           const trace: Trace = { at: event.at, runId: event.runId, sequence: event.sequence, type: event.type };
+          if(event.type==='run.progress.v2'){const p=event.data;if(p.kind==='tool.started'||p.kind==='tool.finished'){trace.name=safe(p.name);trace.callId=p.callId;trace.status=p.kind==='tool.started'?'running':p.status;if(p.kind==='tool.finished'){if(p.preview!==undefined)trace.preview=safe(p.preview).slice(0,2000);trace.previewTruncated=p.previewTruncated||Boolean(p.preview&&p.preview.length>2000);trace.durationMs=p.durationMs;trace.errorCode=p.errorCode;}}else if(p.kind==='text.delta'){return;}else return;}
           if (event.type === 'provider.progress') {
             const data = event.data;
             if (!data || typeof data !== 'object' || !('kind' in data) || data.kind !== 'tool') return;
@@ -135,10 +150,10 @@ export async function startStudio(options: StudioOptions) {
           if (job.events.length >= 100) { job.events.shift(); job.droppedEvents++; }
           job.events.push(trace);persist();
         };
-        job.done=Promise.resolve().then(()=>options.submitTask(id,data.input as string,controller.signal,onEvent)).then(result=>{
+        job.done=Promise.resolve().then(()=>options.submitTask(id,data.input as string,controller.signal,onEvent,job.runId?{runId:job.runId}:undefined)).then(result=>{
           if(controller.signal.aborted){job.state='cancelled';return;}
-          job.state='completed';const text=typeof result==='object'&&result!==null&&'finalText' in result?safe(String(result.finalText)):json(result);job.resultTruncated=text.length>8000;job.text=text.slice(0,8000);
-        }).catch((error: unknown)=>{const code=error instanceof Error&&'code' in error&&typeof error.code==='string'&&/^[A-Z_]{1,64}$/.test(error.code)?error.code:'RUN_FAILED';job.state=code==='RUN_REVOKED'?'revoked':code==='RUN_INTERRUPTED'?'interrupted':code==='RUN_TIMEOUT'?'timed-out':controller.signal.aborted||code==='RUN_CANCELLED'?'cancelled':'failed';job.text=code;}).finally(persist);
+          job.state='completed';const text=safe(options.publicResults?publicText(parseTaskResultV2(result)):legacyStudioText(result));job.resultTruncated=text.length>8000;job.text=text.slice(0,8000);
+        }).catch((error: unknown)=>{const code=error instanceof Error&&'code' in error&&typeof error.code==='string'&&/^[A-Z_]{1,64}$/.test(error.code)?error.code:'RUN_FAILED';job.state=code==='RUN_OUTCOME_UNKNOWN'?'uncertain':code==='RUN_REVOKED'?'revoked':code==='RUN_INTERRUPTED'?'interrupted':code==='RUN_TIMEOUT'?'timed-out':controller.signal.aborted||code==='RUN_CANCELLED'?'cancelled':'failed';job.text=code;}).finally(persist);
         res.writeHead(202);res.end(encode({jobId:job.id}));return;
       }else{res.writeHead(404);res.end('{}');return;}
       res.end(encode(rpcId?(permissions.includes('state:read')?{accepted:true,instance:options.manager.snapshot(id)}:{accepted:true}):permissions.includes('state:read') ? snapshot(permissions) : {accepted:true}));

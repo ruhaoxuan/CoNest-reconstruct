@@ -65,3 +65,25 @@ admitted.tools?.push('shell');
 const unsafeNative:NativeSetup={workspaceRoot:'/w',sessionPersistenceRoot:'/s',enableBridgeProofAdapter:true,gateway:'ws://example.com'};
 // @ts-expect-error restart limit must be a number
 const invalidRestart:Control['restart']={maxFailures:'unlimited',windowMs:1000,baseDelayMs:100,maxDelayMs:1000};
+
+import type {TaskRequestV2,TaskResultV2,ProgressV2,ExecutionFence} from '../../src/index.mjs';
+const publicRequest:TaskRequestV2={schemaVersion:2,runId:'v2',subject:'alice',input:{type:'text',text:'hello'},session:{mode:'ephemeral'}};
+void manager.runV2('sample',publicRequest);
+// @ts-expect-error public tasks require text content, not an SDK object
+const badPublicInput:TaskRequestV2['input']={type:'text',text:{prompt:'bad'}};
+// @ts-expect-error this runtime increment explicitly excludes continuing sessions
+const badPublicSession:TaskRequestV2['session']={mode:'continue',id:'native-session'};
+// @ts-expect-error private credential fields cannot be a public result
+const badPublicResult:TaskResultV2={schemaVersion:2,content:[],token:'secret'};
+// @ts-expect-error tool finish events require a call identity
+const badPublicProgress:ProgressV2={kind:'tool.finished',name:'read',status:'completed'};
+// @ts-expect-error execution record status is a closed union
+const badFenceState:ExecutionFence['status']='probably-done';
+// @ts-expect-error risk acceptance must be explicit boolean
+manager.acknowledgeExecution('sample','run','token','operator','yes');
+// @ts-expect-error provider projections return the public schema, never raw framework output
+const badProjector:HarnessProvider['projectResult']=()=>({finalText:'raw'});
+
+import type {ExecutionPersistence} from '../../src/index.mjs';
+// @ts-expect-error a pending Promise is not an acknowledged synchronous journal commit
+const badAsyncJournal:ExecutionPersistence={async save(){},remove(){return undefined;}};

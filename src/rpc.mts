@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { HarnessError, requireCondition } from './contracts.mjs';
 export const RPC_VERSION=1;
 export const RPC_METHODS:Record<string,{route:string;read?:boolean}>={
+  'execution.list':{route:'/api/executions',read:true},'execution.reconcile':{route:'/api/execution-reconcile'},'execution.acknowledge':{route:'/api/execution-acknowledge'},
   'audit.list':{route:'/api/audit',read:true},'instance.list':{route:'/api/state',read:true},'instance.start':{route:'/api/start'},'instance.stop':{route:'/api/stop'},
   'task.run':{route:'/api/run'},'task.cancel':{route:'/api/cancel'},'access.revoke':{route:'/api/revoke'},'access.restore':{route:'/api/restore'},
   'policy.get':{route:'/api/policy',read:true},'policy.update':{route:'/api/policy'},'config.schema':{route:'/api/schema',read:true},'restart.reset':{route:'/api/reset-restarts'},'credential.revoke':{route:'/api/credential-revoke'},'credential.restore':{route:'/api/credential-restore'},

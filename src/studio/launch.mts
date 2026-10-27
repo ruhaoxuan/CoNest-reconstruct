@@ -6,7 +6,7 @@ import { LocalStateStore } from '../state-store.mjs';
 import { createEnvironmentCredentials } from '../credentials.mjs';
 import { createLiveStudioProviders } from '../adapters/studio-live.mjs';
 import { createProofStudioProviders } from '../adapters/studio-proof.mjs';
-import { createStudioApplication, readStudioConfig } from './application.mjs';
+import { createStudioApplicationV2 as createStudioApplication, readStudioConfig } from './application.mjs';
 import { startStudio } from './server.mjs';
 
 const mode = process.env.CONEST_RECONSTRUCT_MODE ?? 'proof';
@@ -43,7 +43,10 @@ try {
   for(const reference of store.credentialRevocations())credentials.revoke!(reference);
   const definitions=mode==='live'?createLiveStudioProviders(runtime,credentials):createProofStudioProviders(runtime);
   const app=createStudioApplication(await readStudioConfig(configFile),definitions,
-    {persistAuthorization:(id,record)=>store.saveAuthorization(id,record),onEvent:event=>store.record(event)});
+    {executions:{save:record=>store.saveExecution(record),remove:(record,evidence)=>store.removeExecution(record,evidence)},persistAuthorization:(id,record)=>store.saveAuthorization(id,record),onEvent:event=>store.record(event)});
+  app.manager.restoreExecutions(store.executionFences());
+  // Conservatively migrate bounded legacy history that predates the dispatch journal.
+  for(const raw of store.restoredJobs()){const job=raw as {instanceId:string;runId?:string;id:string;executionState?:string;startedAt?:string};if(job.executionState!=='unknown')continue;const runId=job.runId??job.id;if(app.manager.executionFences(job.instanceId).some(f=>f.runId===runId))continue;const instance=app.manager.list().find(i=>i.id===job.instanceId);app.manager.restoreExecutions([{instanceId:job.instanceId,runId,generation:'legacy-recovery',providerId:instance?.provider??'legacy.unknown',providerVersion:instance?.providerVersion??'legacy',subject:'studio',token:randomUUID(),createdAt:job.startedAt??new Date().toISOString(),status:'uncertain'}]);}
   for(const [id,record] of Object.entries(store.authorizations()))if(app.manager.list().some(i=>i.id===id))app.manager.restoreAuthorization(id,record);
   for(const instance of app.manager.list())await store.saveAuthorization(instance.id,app.manager.authorization(instance.id));
   const token=randomUUID(),viewerToken=randomUUID();

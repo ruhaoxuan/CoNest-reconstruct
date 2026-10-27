@@ -1,6 +1,6 @@
 {
   "name": "@local/conest-harness-core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -38,6 +38,10 @@
     "./adapters/host-binding": {
       "types": "./dist/adapters/host-binding.d.mts",
       "import": "./dist/adapters/host-binding.mjs"
+    },
+    "./public-v2": {
+      "types": "./dist/public-v2.d.mts",
+      "import": "./dist/public-v2.mjs"
     }
   },
   "scripts": {
@@ -55,7 +59,8 @@
     "test:studio": "npm run build && node --test test/studio.test.mjs",
     "schema": "node scripts/config-schema.mjs",
     "control": "node scripts/control.mjs",
-    "validate": "npm test && npm run test:types && npm run check && npm run test:dsh"
+    "validate": "npm test && npm run test:types && npm run check && npm run test:dsh",
+    "test:conformance": "npm run build && node --test test/conformance.test.mjs test/integration/dsh-conformance.test.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.0",

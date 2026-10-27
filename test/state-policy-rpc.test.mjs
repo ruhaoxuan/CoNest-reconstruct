@@ -20,12 +20,13 @@ test('SQLite preserves revocation and bounded history, excludes secrets from aud
  const {manager}=fixture({persistAuthorization:(id,value)=>store.saveAuthorization(id,value)});
  await manager.updateAccess('a',false);await manager.updatePolicy('a',{subjects:['studio'],allow:['read'],deny:[],tools:['read_file']});
  store.saveJobs([{id:'j',instanceId:'a',state:'running',events:[],text:'synthetic-secret'}]);
+ store.record({type:'run.progress.v2',instanceId:'a',runId:'r',generation:'g',sequence:2,at:'now',data:{kind:'tool.finished',callId:'c',name:'public_tool',status:'completed',preview:'synthetic-secret'}});
  store.record({type:'provider.progress',instanceId:'a',runId:'r',generation:'g',sequence:1,at:'now',data:{kind:'tool',name:'read_file',status:'completed',preview:'synthetic-secret'}});store.flush();
  await assert.rejects(LocalStateStore.open(dir),e=>e.code==='STATE_IN_USE');assert.equal((await stat(path.join(dir,'control.sqlite'))).mode&0o777,0o600);store.close();
  const reopened=await LocalStateStore.open(dir);t.after(()=>reopened.close());
  const restored=fixture();restored.manager.restoreAuthorization('a',reopened.authorizations().a);
  assert.equal(restored.manager.snapshot('a').taskAccess,'revoked');assert.deepEqual(restored.manager.policy('a').tools,['read_file']);
- const job=reopened.restoredJobs()[0];assert.equal(job.state,'interrupted');assert.equal(job.recovered,true);assert.doesNotMatch(JSON.stringify(reopened.audit()),/synthetic-secret|preview/);
+ const job=reopened.restoredJobs()[0];assert.equal(job.state,'interrupted');assert.equal(job.recovered,true);assert.doesNotMatch(JSON.stringify(reopened.audit()),/synthetic-secret|preview/);assert(JSON.stringify(reopened.audit()).includes('public_tool'));
 });
 test('dead coordinator lease recovers without replay and transactional authorization failure cannot grant access',async t=>{
  const dir=await root(t),module=path.resolve('dist/state-store.mjs');
@@ -60,4 +61,10 @@ test('credential rotation and revocation invalidate a guarded instance and never
  instance.setFailureHandler(code=>failure=code);await instance.start();credentials.rotate('env:DEEPSEEK_API_KEY','synthetic-new-key');assert.equal(failure,'CREDENTIAL_STALE');await assert.rejects(instance.start(),e=>e.code==='CREDENTIAL_STALE');
  credentials.revoke('env:DEEPSEEK_API_KEY');assert.equal(failure,'CREDENTIAL_REVOKED');assert.throws(()=>credentials.resolve('env:DEEPSEEK_API_KEY'),e=>e.code==='CREDENTIAL_REVOKED');
  assert.equal(credentials.redact('synthetic-old-key synthetic-new-key'),'[REDACTED] [REDACTED]');await instance.stop();
+});
+
+test('credential rotation during reconciliation rejects the late confirmation',async()=>{
+ const credentials=createEnvironmentCredentials({DEEPSEEK_API_KEY:'synthetic-old-key'}),reference='env:DEEPSEEK_API_KEY',gate=Promise.withResolvers();
+ const guarded=guardCredentialInstance({async start(){},async run(){},async stop(){},async reconcileExecution(){await gate.promise;return {status:'settled'};}},credentials,reference,credentials.resolve(reference));
+ const check=guarded.reconcileExecution({}, {signal:new AbortController().signal});const rejected=assert.rejects(check,e=>e.code==='CREDENTIAL_STALE');credentials.rotate(reference,'synthetic-new-key');gate.resolve();await rejected;await guarded.stop();
 });

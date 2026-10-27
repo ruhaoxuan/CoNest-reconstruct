@@ -11,3 +11,7 @@ export { HarnessRpcClient, RPC_VERSION } from './rpc.mjs';
 export { ToolPluginRegistry } from './tool-plugins.mjs';
 export { publishTools } from './publication.mjs';
 export type { ManagerOptions, AuthorizationRecord } from './manager.mjs';
+
+export { parseTaskResultV2, parseProgressV2, parseTaskRequestV2, publicText, PUBLIC_CONTRACT_VERSION } from './public-v2.mjs';
+export type { TaskResultV2, ProgressV2, TaskRequestV2 } from './public-v2.mjs';
+export type { ExecutionFence, ExecutionPersistence } from './execution-journal.mjs';

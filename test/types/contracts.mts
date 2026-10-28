@@ -87,3 +87,10 @@ const badProjector:HarnessProvider['projectResult']=()=>({finalText:'raw'});
 import type {ExecutionPersistence} from '../../src/index.mjs';
 // @ts-expect-error a pending Promise is not an acknowledged synchronous journal commit
 const badAsyncJournal:ExecutionPersistence={async save(){},remove(){return undefined;}};
+
+import type {LabAction} from '../../src/lab/contracts.mjs';
+const labAction:LabAction={id:'request-id',action:'run',instanceId:'a',scenario:'tool-wait'};
+// @ts-expect-error lab process controls cannot take a caller-selected PID
+const badLabPid:LabAction={id:'request-id',action:'terminate-worker',instanceId:'a',pid:123};
+// @ts-expect-error lab scenarios are a closed set, never arbitrary executable names
+const badLabScenario:LabAction={id:'request-id',action:'run',instanceId:'a',scenario:'remote-shell'};

@@ -16,7 +16,7 @@ npm run check
 npm run demo
 ```
 
-`npm test` checks types, builds and runs behavior tests. `test:types` proves that 26 deliberately invalid contracts are rejected. Core checks require no SDK, credentials or model service. `check` also checks JavaScript syntax and rejects direct framework imports outside `src/adapters/`. Scripts and JavaScript tests are runtime checked rather than fully statically typed.
+`npm test` checks types, builds and runs behavior tests. `test:types` proves that 28 deliberately invalid contracts are rejected. Core checks require no SDK, credentials or model service. `check` also checks JavaScript syntax and rejects direct framework imports outside `src/adapters/`. Scripts and JavaScript tests are runtime checked rather than fully statically typed.
 
 ## Prepare the optional native DSH support
 
@@ -132,6 +132,28 @@ CONEST_RECONSTRUCT_PORT=18806 npm run studio
 ```
 
 Start `uncertain-demo` and submit any text to simulate unknown execution; `echo-demo` verifies instance isolation. Restart with the same state and verify the fence remains. The page requires an explicit risk checkbox before acknowledgment; read-only tokens cannot act. Re-running the generator refuses an existing config. Acknowledgment leaves the old task unknown, and another `uncertain-demo` task will deliberately produce another fence. Browser click/visual acceptance remains manual.
+
+## Interactive DSH fault lab
+
+After preparing the native DSH support pack, run the standalone lab:
+
+```sh
+npm run lab:dsh
+```
+
+Open http://127.0.0.1:18807 and connect with the token from `.local/dsh-fault-lab/connection.json`. This is a separate service and token from Studio or the synthetic fence demo. It uses real DSH workers, a localhost deterministic model and synthetic receipt tools; no provider key, proxy or paid inference is needed. Starting the lab does not submit a task. Ctrl+C releases its waiting tools and cleans up owned processes. Set `CONEST_LAB_STATE` and `CONEST_LAB_PORT` for a separate lab; an existing non-lab directory is refused. Startup rotates the local access tokens.
+
+Select a scenario on A: normal completion, a waiting partial model stream, an automatically truncated tool call, or a committed tool receipt waiting for return. Start A, then use the matching controls. Cancellation leaves actual delayed tool work tracked until **Release tool return**; incomplete tool arguments must produce no receipt. Run B to inspect isolation. Only this lab's worker and coordinator handles can be terminated; no PID, shell command, provider URL or credentials can be supplied through the page/API.
+
+To observe unknown execution, start a waiting task, terminate the lab coordinator and restart it from the same state. The page stays available; recovered execution fences block new work without replay. Risk acknowledgment requires an explicit checkbox, retains unknown status and does not certify completion. The native DSH adapter has no old-execution reconciliation action. The viewer token in `viewer-connection.json` permits observation only.
+
+The page separates model receipt, tool commit/return, caller result, actual work, resource state and observed process exit. HTTP counts cover only the current page-service lifetime; retained tool receipts and execution fences survive coordinator/service restart. Task/event history is bounded and buffered, so missing historical evidence is not evidence of non-execution. A graceful shutdown saves settled history; ambiguous recovered history remains fenced. The lab retains at most 100 jobs, 500 model receipts and 512 in-memory control responses; use a fresh state directory for another batch. Do not remove unresolved state as a recovery shortcut.
+
+```sh
+npm run test:lab:dsh
+```
+
+This performs real SDK/HTTP/IPC acceptance with no model charges. Page script tests cover permission gating, evidence text rendering and fresh risk confirmation; browser clicks/layout remain manual. The normal Studio entry and public Harness contracts do not acquire lab controls or an OpenClaw dependency.
 
 ## Durable state and RPC
 

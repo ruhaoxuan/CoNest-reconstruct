@@ -61,7 +61,9 @@
     "control": "node scripts/control.mjs",
     "validate": "npm test && npm run test:types && npm run check && npm run test:dsh",
     "test:conformance": "npm run build && node --test test/conformance.test.mjs test/integration/dsh-conformance.test.mjs",
-    "test:dsh:faults": "npm run build && node --test test/integration/dsh-http-faults.test.mjs"
+    "test:dsh:faults": "npm run build && node --test test/integration/dsh-http-faults.test.mjs",
+    "lab:dsh": "npm run build && node examples/dsh-fault-lab.mjs",
+    "test:lab:dsh": "npm run build && node --test test/integration/dsh-fault-lab.test.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.0",

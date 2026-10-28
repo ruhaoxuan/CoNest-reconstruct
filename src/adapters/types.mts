@@ -58,7 +58,7 @@ export interface RuntimeClient {
   extension(call: RuntimeCall): Promise<unknown>;
 }
 export type RuntimeClientConstructor = new (options: {
-  workerFile: string; workspaceRoot: string; startupTimeoutMs: number; shutdownTimeoutMs: number; onFailure?: (message: string) => void;
+  workerFile: string; workspaceRoot: string; startupTimeoutMs: number; shutdownTimeoutMs: number; onFailure?: (message: string, code?: 'PROCESS_EXITED' | 'TRANSPORT_LOST') => void;
 }) => RuntimeClient;
 export interface DshProviderOptions {
   readonly runtimeRoot: string;

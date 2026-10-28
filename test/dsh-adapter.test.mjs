@@ -12,16 +12,18 @@ const response = text => ({ sessionId: 's', provider: 'bridge-proof', model: 'te
   toolCalls: [], toolResults: [], eventCount: 0, modelIterations: 1, sessionReused: false,
   usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 } });
 
-async function fixture(t, { tools = [], authority = () => {}, execute, redact, turnOverrides = {} } = {}) {
+async function fixture(t, { tools = [], authority = () => {}, execute, endSession, redact, turnOverrides = {} } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-adapter-unit-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   let retained;
   class Client {
+    constructor(options) { this.options = options; }
     async start() {} async stop() {}
     async extension(call) {
+      if (call.operation === 'endHarnessSession') return endSession?.() ?? {};
       if (call.operation !== 'runHarnessAgent') return {};
       retained = call;
-      return execute ? execute(call) : { finalText: 'ok' };
+      return execute ? execute(call, this.options) : { finalText: 'ok' };
     }
   }
   const provider = createDshProvider({ runtimeRoot: root, proofMode: true, redact, loadClient: async () => Client,
@@ -96,4 +98,13 @@ test('tool trace previews redact credentials before truncation and preserve corr
   assert.equal(progress.length,2);assert.equal(progress[0].data.status,'running');assert.equal(progress[1].data.status,'completed');
   assert.equal(progress[1].runId,request.runId);assert.equal(typeof progress[1].data.durationMs,'number');
   assert.doesNotMatch(progress[1].data.preview,/synthetic/);
+});
+
+for(const code of ['PROCESS_EXITED',undefined])test('DSH preserves failure evidence through failed session disposal: '+(code??'legacy notification'),async t=>{
+ const {HarnessError}=await import('../dist/contracts.mjs');
+ const f=await fixture(t,{execute:(_call,options)=>{options.onFailure('Synthetic transport notification',code);throw new HarnessError('BRIDGE_EXITED','Disconnected');},endSession:()=>{throw new HarnessError('BRIDGE_UNAVAILABLE','Session disposal unavailable');}});
+ await assert.rejects(f.manager.run('dsh',request),e=>e.code==='RUN_INTERRUPTED');
+ for(let n=0;n<100&&f.manager.snapshot('dsh').activeRuns;n++)await new Promise(r=>setTimeout(r,10));
+ assert.equal(f.manager.snapshot('dsh').activeRuns,0);
+ assert.equal(f.manager.snapshot('dsh').lastError,code??'TRANSPORT_LOST');
 });

@@ -60,7 +60,8 @@
     "schema": "node scripts/config-schema.mjs",
     "control": "node scripts/control.mjs",
     "validate": "npm test && npm run test:types && npm run check && npm run test:dsh",
-    "test:conformance": "npm run build && node --test test/conformance.test.mjs test/integration/dsh-conformance.test.mjs"
+    "test:conformance": "npm run build && node --test test/conformance.test.mjs test/integration/dsh-conformance.test.mjs",
+    "test:dsh:faults": "npm run build && node --test test/integration/dsh-http-faults.test.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.0",

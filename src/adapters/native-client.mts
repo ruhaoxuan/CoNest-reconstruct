@@ -13,10 +13,11 @@ export class NativeDshClient implements RuntimeClient {
  private readonly pending=new Map<string,Pending>();
  private state:'stopped'|'starting'|'ready'|'failed'='stopped';
  private stopping:Promise<void>|undefined;
+ private unexpectedFailure=false;
  constructor(private readonly root:string,private readonly options:Options){}
  async status(){return {state:this.state,pid:this.child?.pid};}
  async start():Promise<void>{
-  requireCondition(this.state==='stopped','BRIDGE_UNAVAILABLE','DSH client cannot start in current state');this.state='starting';
+  requireCondition(this.state==='stopped','BRIDGE_UNAVAILABLE','DSH client cannot start in current state');this.state='starting';this.unexpectedFailure=false;
   const child=fork(fileURLToPath(new URL('./native-worker.mjs',import.meta.url)),[this.root],{
    cwd:this.options.workspaceRoot,detached:process.platform!=='win32',stdio:['ignore','ignore','ignore','ipc'],
    // Model credentials are explicit IPC setup values, never inherited by every worker.
@@ -27,7 +28,7 @@ export class NativeDshClient implements RuntimeClient {
    const timer=setTimeout(()=>{reject(new HarnessError('BRIDGE_UNAVAILABLE','DSH startup timed out'));},this.options.startupTimeoutMs);
    const failed=(error:unknown)=>{clearTimeout(timer);if(!ready)reject(error);};
    child.once('error',failed);
-   child.once('exit',()=>{failed(new HarnessError('BRIDGE_EXITED','DSH worker exited'));this.fail();});
+   child.once('exit',()=>{failed(new HarnessError('BRIDGE_EXITED','DSH worker exited'));this.fail('PROCESS_EXITED');});
    child.once('disconnect',()=>{failed(new HarnessError('BRIDGE_DISCONNECTED','DSH worker disconnected'));if(!this.stopping)this.fail();});
    child.on('message',value=>{
     if(!nativeMessage(value)){this.fail();void this.terminate();return;}
@@ -36,10 +37,12 @@ export class NativeDshClient implements RuntimeClient {
    });
   });
  }
- private fail():void{
-  const expected=!!this.stopping||this.state==='stopped';this.state=expected?'stopped':'failed';
-  for(const p of this.pending.values()){p.controller.abort();p.clean();p.reject(new HarnessError('BRIDGE_EXITED','DSH worker exited or disconnected'));}this.pending.clear();
-  if(!expected)this.options.onFailure?.('DSH worker exited or disconnected');
+ private fail(code:'PROCESS_EXITED'|'TRANSPORT_LOST'='TRANSPORT_LOST'):void{
+  const expected=!this.unexpectedFailure&&(!!this.stopping||this.state==='stopped');
+  if(!expected)this.unexpectedFailure=true;
+  this.state=expected?'stopped':'failed';
+  for(const p of this.pending.values()){p.controller.abort();p.clean();p.reject(new HarnessError(code==='PROCESS_EXITED'?'BRIDGE_EXITED':'BRIDGE_DISCONNECTED',code==='PROCESS_EXITED'?'DSH worker exited':'DSH transport lost'));}this.pending.clear();
+  if(!expected)this.options.onFailure?.(code==='PROCESS_EXITED'?'DSH worker exited':'DSH transport lost',code);
  }
  private send(value:NativeMessage):void{
   requireCondition(this.child?.connected,'BRIDGE_DISCONNECTED','DSH IPC unavailable');
@@ -81,7 +84,7 @@ export class NativeDshClient implements RuntimeClient {
    try{
     // Rejecting on timeout keeps ownership; manager may explicitly escalate owned termination.
     if(this.state==='ready')await this.request('stop',{operation:'start',setup:{workspaceRoot:this.options.workspaceRoot,sessionPersistenceRoot:'',enableBridgeProofAdapter:false},timeoutMs:this.options.shutdownTimeoutMs});
-    if(child.exitCode===null&&child.signalCode===null){child.disconnect();await exited;}
+    if(child.exitCode===null&&child.signalCode===null){if(child.connected)child.disconnect();await exited;}
     this.state='stopped';
    }finally{this.stopping=undefined;}
   })();return this.stopping;

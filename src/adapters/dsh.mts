@@ -52,8 +52,14 @@ export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute,
     async createInstance(config) {
       const Client = await loadClient(runtimeRoot);
       let failureHandler: ((code: InstanceFailureCode) => void) | undefined;
+      let observedFailure:InstanceFailureCode|undefined;
+      const reportFailure=(code:InstanceFailureCode)=>{
+        // A later catch for the same failed RPC must not downgrade an observed exit.
+        if(observedFailure==='PROCESS_EXITED'&&code==='TRANSPORT_LOST')return;
+        observedFailure=code;failureHandler?.(code);
+      };
       const client = new Client({ workerFile: fileURLToPath(new URL('./native-worker.mjs',import.meta.url)),
-        workspaceRoot: config.workspaceRoot, startupTimeoutMs: 30_000, shutdownTimeoutMs: 5000, onFailure: () => failureHandler?.('PROCESS_EXITED') });
+        workspaceRoot: config.workspaceRoot, startupTimeoutMs: 30_000, shutdownTimeoutMs: 5000, onFailure: (_message, code) => reportFailure(code ?? 'TRANSPORT_LOST') });
       // Credential/transport routing comes from trusted services, never JSON/model arguments.
       const modelRoute = await resolveModelRoute?.(config);
       const setup = { ...config, enableBridgeProofAdapter: proofMode, ...(modelRoute ? { modelRoute } : {}) };
@@ -140,7 +146,7 @@ export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute,
             assertActive();
             return result;
           } catch (error) {
-            if (error && typeof error === 'object' && 'code' in error && ['BRIDGE_EXITED','BRIDGE_DISCONNECTED','BRIDGE_UNAVAILABLE'].includes(String(error.code))) failureHandler?.('TRANSPORT_LOST');
+            if (error && typeof error === 'object' && 'code' in error && ['BRIDGE_EXITED','BRIDGE_DISCONNECTED','BRIDGE_UNAVAILABLE'].includes(String(error.code))) reportFailure('TRANSPORT_LOST');
             throw error;
           } finally {
             active = false;
@@ -150,7 +156,7 @@ export function createDshProvider({ runtimeRoot, resolveTurn, resolveModelRoute,
               if (signal.aborted) {
                 try { await client.extension({ operation: 'endHarnessSession', setup,
                   args: { sessionId: turn.hostSessionId, agentId: turn.hostAgentId }, timeoutMs: 5000 }); }
-                catch (error) { failureHandler?.('TRANSPORT_LOST'); await client.stop(); throw error; }
+                catch (error) { reportFailure('TRANSPORT_LOST'); await client.stop(); throw error; }
               }
             } finally { await Promise.allSettled([...callbackWork]);running.delete(session); }
           }

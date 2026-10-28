@@ -111,6 +111,16 @@ Run the same acceptance cases against the synthetic provider and real DSH:
 npm run test:conformance
 ```
 
+Run the native DSH fault matrix after preparing the support pack:
+
+```sh
+npm run test:dsh:faults
+```
+
+This starts real SDK workers and a controlled localhost HTTP/SSE endpoint with synthetic credentials. It exercises failures before HTTP receipt, dropped/truncated responses, incomplete tool arguments, explicit authentication/rate errors, cancellation with a delayed tool receipt, IPC loss before process exit, worker crashes and coordinator recovery. No paid model or Gateway is contacted. POSIX signal-order tests are skipped on Windows.
+
+Transport loss is reported as `TRANSPORT_LOST`; only an observed process exit establishes `PROCESS_EXITED`. A later generic RPC failure cannot downgrade that evidence. Cancelling the caller does not release still-running tool work. After coordinator death, durable in-flight intents recover as uncertain and block admission without replay, even if the model socket has since closed. Local cleanup neither proves external model computation/billing has stopped nor undoes tool side effects. These tests do not establish arbitrary-tool exactly-once semantics or native reconciliation of old DSH executions.
+
 A synthetic, no-charge UI exercise needs no SDK or Gateway:
 
 ```sh

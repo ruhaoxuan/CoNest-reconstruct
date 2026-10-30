@@ -1,3 +1,5 @@
+import {LocalPrivateVault} from '../../dist/private-vault.mjs';
+import {createEnvironmentCredentials} from '../../dist/credentials.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -9,7 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {OpenClawConnection} from '../../dist/adapters/openclaw-connection.mjs';
 import {loadOpenClawClient} from '../../dist/adapters/openclaw-client.mjs';
-import {fixture,hello,agent,requestOptions,delay} from '../fixtures/openclaw.mjs';
+import {fixture,hello,agent,requestOptions,delay,device} from '../fixtures/openclaw.mjs';
 const root=path.resolve('.vendor/openclaw-client'),require=createRequire(path.join(root,'package.json'));
 const {WebSocketServer}=require('ws');
 const {buildDeviceAuthPayloadV3}=await import(pathToFileURL(require.resolve('@openclaw/gateway-client')).href);
@@ -83,4 +85,24 @@ test('revocation closes a real socket, blocks late results and keeps the fixture
 test('fixed optional support detects altered and extra dependency files before import',async t=>{
  const temp=await mkdtemp(path.join(os.tmpdir(),'conest-client-seal-'));t.after(()=>rm(temp,{recursive:true,force:true}));const copy=path.join(temp,'support');await cp(root,copy,{recursive:true});
  const entry=path.join(copy,'node_modules/@openclaw/gateway-client/dist/index.mjs'),original=await readFile(entry);await appendFile(entry,'\n// synthetic drift\n');await assert.rejects(loadOpenClawClient(copy),{code:'OPENCLAW_SUPPORT_MISMATCH'});await writeFile(entry,original);await writeFile(path.join(copy,'node_modules/unsealed.mjs'),'// unsealed');await assert.rejects(loadOpenClawClient(copy),{code:'OPENCLAW_SUPPORT_MISMATCH'});
+});
+
+test('official signed connections recover private identity and credential epochs while each connection epoch changes',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'conest-client-vault-'));t.after(()=>rm(dir,{recursive:true,force:true}));const s=await server(t);let credentials;
+ let vault=await LocalPrivateVault.open(dir,{remember:value=>credentials.remember(value)});
+ const wire=()=>{
+  credentials=createEnvironmentCredentials({TEST_BOOTSTRAP:'synthetic-bootstrap'},{references:['env:TEST_BOOTSTRAP'],epochs:vault.credentialEpochs()});
+  const identities=vault.references('identities',{secretValues:v=>[v.privateKeyPem]}),bindings=vault.references('bindings',{secretValues:()=>[]});
+  bindings.register('local:test-gateway',{endpoint:s.endpoint,agentId:'conest-test',releaseProfile:'openclaw-2026.9.2-v4'});
+  return {credentials,identities,bindings,deviceTokens:vault.scopedSecrets('device-auth'),runtimeRoot:root,loadClient:async()=>Client};
+ };
+ let services=wire();services.identities.register('local:test-device',device());let f=fixture({config:{endpoint:s.endpoint},options:services}),c=new OpenClawConnection(f.options);await c.start();const before=c.evidence();await c.close();vault.close();
+ vault=await LocalPrivateVault.open(dir,{remember:value=>credentials.remember(value)});t.after(()=>vault.close());services=wire();f=fixture({config:{endpoint:s.endpoint},options:services});c=new OpenClawConnection(f.options);t.after(()=>c.close());await c.start();const after=c.evidence();
+ assert.equal(after.identityLease,before.identityLease);assert.equal(after.gatewayBindingLease,before.gatewayBindingLease);assert.equal(after.credentialLease.epoch,before.credentialLease.epoch);assert.equal(after.credentialLease.persistence,'configured');assert.notEqual(after.connectionEpoch,before.connectionEpoch);assert.equal(after.gatewayBootId,'fixture-boot');assert(!JSON.stringify(after).includes('synthetic-device-token'));
+ const connects=s.requests.filter(r=>r.method==='connect');assert.equal(connects[0].params.auth.bootstrapToken,'synthetic-bootstrap');assert.equal(connects[1].params.auth.deviceToken,'synthetic-device-token');assert.equal(s.requests.filter(r=>r.method==='agent').length,0);await c.close();
+});
+test('revoked persisted device auth retires the old connection and cannot silently fall back to bootstrap',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'conest-client-revoke-'));t.after(()=>rm(dir,{recursive:true,force:true}));const s=await server(t);let credentials;const vault=await LocalPrivateVault.open(dir,{remember:value=>credentials.remember(value)});t.after(()=>vault.close());credentials=createEnvironmentCredentials({TEST_BOOTSTRAP:'synthetic-bootstrap'},{references:['env:TEST_BOOTSTRAP'],epochs:vault.credentialEpochs()});
+ const identities=vault.references('identities',{secretValues:v=>[v.privateKeyPem]}),bindings=vault.references('bindings',{secretValues:()=>[]});identities.register('local:test-device',device());bindings.register('local:test-gateway',{endpoint:s.endpoint,agentId:'conest-test',releaseProfile:'openclaw-2026.9.2-v4'});const deviceTokens=vault.scopedSecrets('device-auth'),f=fixture({config:{endpoint:s.endpoint},options:{credentials,identities,bindings,deviceTokens,runtimeRoot:root,loadClient:async()=>Client}}),c=new OpenClawConnection(f.options);t.after(()=>c.close());await c.start();const proof=c.evidence();deviceTokens.revoke(proof.gatewayBindingLease,proof.identityLease);assert.throws(()=>c.evidence(),{code:'OPENCLAW_CONNECTION_RETIRED'});await c.close();
+ const next=new OpenClawConnection(f.options);t.after(()=>next.close());await assert.rejects(next.start(),{code:'CREDENTIAL_REVOKED'});assert.equal(s.connections(),1);assert.equal(s.requests.filter(r=>r.method==='agent').length,0);
 });

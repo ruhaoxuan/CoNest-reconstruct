@@ -1,5 +1,5 @@
 import { privateRecordKey, privateRecordValue } from './provider-services.mjs';
-import type { PrivateRecord, ProviderRecordStore } from './provider-services.mjs';
+import type { PrivateJson, PrivateRecordKey, PrivateRecord, UniqueProviderRecordStore } from './provider-services.mjs';
 import { identifier } from './contracts.mjs';
 import { parseExecutionFence } from './execution-journal.mjs';
 import type { ExecutionFence } from './execution-journal.mjs';
@@ -40,6 +40,7 @@ export class LocalStateStore {
       this.#db.exec('COMMIT');
       this.#db.exec('CREATE TABLE IF NOT EXISTS executions(instance_id TEXT NOT NULL,run_id TEXT NOT NULL,token TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(instance_id,run_id))');
       this.#db.exec('CREATE TABLE IF NOT EXISTS provider_records(provider TEXT NOT NULL,instance_id TEXT NOT NULL,run_id TEXT NOT NULL,generation TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL,PRIMARY KEY(provider,instance_id,run_id,generation))');
+      this.#db.exec('CREATE TABLE IF NOT EXISTS provider_run_reservations(provider TEXT NOT NULL,instance_id TEXT NOT NULL,run_id TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(provider,instance_id,run_id))');
       const columns=this.#db.prepare('PRAGMA table_info(rpc)').all() as {name:string}[];
       if(!columns.some(c=>c.name==='completed'))this.#db.exec('ALTER TABLE rpc ADD COLUMN completed INTEGER NOT NULL DEFAULT 0');
       this.#db.exec('UPDATE rpc SET completed=1 WHERE response IS NOT NULL');
@@ -83,7 +84,7 @@ export class LocalStateStore {
     }catch(error){try{this.#db.exec('ROLLBACK');}catch{}this.#status='failed';throw error instanceof HarnessError?error:new HarnessError('STATE_WRITE_FAILED','Execution settlement not committed');}
   }
   /** Trusted adapter-only capability. Excluded from jobs, snapshots, audit and RPC. */
-  providerRecords(providerId:string):ProviderRecordStore {
+  providerRecords(providerId:string):UniqueProviderRecordStore {
     const provider=identifier(providerId,'providerId');
     return {
       read:key=>{
@@ -91,20 +92,38 @@ export class LocalStateStore {
         const row=this.#db.prepare('SELECT revision,value FROM provider_records WHERE provider=? AND instance_id=? AND run_id=? AND generation=?').get(provider,k.instanceId,k.runId,k.generation) as {revision:number;value:string}|undefined;
         return row?{key:k,revision:row.revision,value:privateRecordValue(JSON.parse(row.value),this.#redact)}:undefined;
       },
-      write:(key,expectedRevision,value):PrivateRecord=>{
-        this.#assertLease();const k=privateRecordKey(key),safe=privateRecordValue(value,this.#redact);
-        requireCondition(expectedRevision===null||(Number.isSafeInteger(expectedRevision)&&expectedRevision>0&&expectedRevision<Number.MAX_SAFE_INTEGER),'PRIVATE_RECORD_CONFLICT','Invalid expected revision');
-        try {
-          this.#db.exec('BEGIN IMMEDIATE');
-          const old=this.#db.prepare('SELECT revision FROM provider_records WHERE provider=? AND instance_id=? AND run_id=? AND generation=?').get(provider,k.instanceId,k.runId,k.generation) as {revision:number}|undefined;
-          requireCondition((old?.revision??null)===expectedRevision,'PRIVATE_RECORD_CONFLICT','Private record changed');
-          requireCondition(Boolean(old)||(this.#db.prepare('SELECT count(*) AS n FROM provider_records').get() as {n:number}).n<5000,'PRIVATE_RECORD_FULL','Private ledger is full; records are never automatically evicted');
-          const revision=(expectedRevision??0)+1;
-          this.#db.prepare('INSERT OR REPLACE INTO provider_records(provider,instance_id,run_id,generation,revision,value) VALUES(?,?,?,?,?,?)').run(provider,k.instanceId,k.runId,k.generation,revision,JSON.stringify(safe));
-          this.#db.exec('COMMIT');return {key:k,revision,value:safe};
-        } catch(error) {try{this.#db.exec('ROLLBACK');}catch{}if(error instanceof HarnessError)throw error;this.#status='failed';throw new HarnessError('STATE_WRITE_FAILED','Private provider record was not committed');}
+      lookupRun:(instanceId,runId)=>{
+        this.#assertLease();identifier(instanceId,'instanceId');identifier(runId,'runId');
+        const rows=this.#db.prepare('SELECT generation,revision,value FROM provider_records WHERE provider=? AND instance_id=? AND run_id=? LIMIT 2').all(provider,instanceId,runId) as {generation:string;revision:number;value:string}[];
+        const claimed=this.#db.prepare('SELECT generation FROM provider_run_reservations WHERE provider=? AND instance_id=? AND run_id=?').get(provider,instanceId,runId) as {generation:string}|undefined;
+        if(rows.length===0)return {status:claimed?'ambiguous':'none'};
+        if(rows.length!==1||(claimed&&claimed.generation!==rows[0]!.generation))return {status:'ambiguous'};
+        const row=rows[0]!;return {status:'unique',record:{key:privateRecordKey({instanceId,runId,generation:row.generation}),revision:row.revision,value:privateRecordValue(JSON.parse(row.value),this.#redact)}};
       },
+      reserveRun:(key,value)=>this.#writePrivate(provider,key,null,value,true),
+      write:(key,revision,value)=>this.#writePrivate(provider,key,revision,value,false),
     };
+  }
+  #writePrivate(provider:string,key:PrivateRecordKey,expectedRevision:number|null,value:PrivateJson,reserve:boolean):PrivateRecord {
+    this.#assertLease();const k=privateRecordKey(key),safe=privateRecordValue(value,this.#redact);
+    requireCondition(expectedRevision===null||(Number.isSafeInteger(expectedRevision)&&expectedRevision>0&&expectedRevision<Number.MAX_SAFE_INTEGER),'PRIVATE_RECORD_CONFLICT','Invalid expected revision');
+    try {
+      this.#db.exec('BEGIN IMMEDIATE');
+      const claimed=this.#db.prepare('SELECT generation FROM provider_run_reservations WHERE provider=? AND instance_id=? AND run_id=?').get(provider,k.instanceId,k.runId) as {generation:string}|undefined;
+      if(reserve){
+        const prior=this.#db.prepare('SELECT 1 FROM provider_records WHERE provider=? AND instance_id=? AND run_id=? LIMIT 1').get(provider,k.instanceId,k.runId);
+        requireCondition(!claimed&&!prior,'PRIVATE_RUN_EXISTS','Public execution identity is already retained');
+        requireCondition((this.#db.prepare('SELECT count(*) AS n FROM provider_run_reservations').get() as {n:number}).n<5000,'PRIVATE_RECORD_FULL','Private reservation ledger is full');
+        this.#db.prepare('INSERT INTO provider_run_reservations(provider,instance_id,run_id,generation) VALUES(?,?,?,?)').run(provider,k.instanceId,k.runId,k.generation);
+      }else requireCondition(!claimed||claimed.generation===k.generation,'PRIVATE_RUN_EXISTS','Another generation owns this public execution');
+      const old=this.#db.prepare('SELECT revision FROM provider_records WHERE provider=? AND instance_id=? AND run_id=? AND generation=?').get(provider,k.instanceId,k.runId,k.generation) as {revision:number}|undefined;
+      requireCondition(reserve||!claimed||old,'PRIVATE_RUN_EXISTS','A retained reservation cannot recreate a missing mapping');
+      requireCondition((old?.revision??null)===expectedRevision,'PRIVATE_RECORD_CONFLICT','Private record changed');
+      requireCondition(Boolean(old)||(this.#db.prepare('SELECT count(*) AS n FROM provider_records').get() as {n:number}).n<5000,'PRIVATE_RECORD_FULL','Private ledger is full; records are never automatically evicted');
+      const revision=(expectedRevision??0)+1;
+      this.#db.prepare('INSERT OR REPLACE INTO provider_records(provider,instance_id,run_id,generation,revision,value) VALUES(?,?,?,?,?,?)').run(provider,k.instanceId,k.runId,k.generation,revision,JSON.stringify(safe));
+      this.#db.exec('COMMIT');return {key:k,revision,value:safe};
+    }catch(error){try{this.#db.exec('ROLLBACK');}catch{}if(error instanceof HarnessError)throw error;this.#status='failed';throw new HarnessError('STATE_WRITE_FAILED','Private provider record was not committed');}
   }
   credentialRevocations():string[]{return (this.#db.prepare('SELECT reference FROM credentials WHERE revoked=1').all() as {reference:string}[]).map(row=>row.reference);}
   async setCredentialRevoked(reference:string,revoked:boolean):Promise<void>{

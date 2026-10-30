@@ -46,6 +46,10 @@
     "./provider-services": {
       "types": "./dist/provider-services.d.mts",
       "import": "./dist/provider-services.mjs"
+    },
+    "./private-vault": {
+      "types": "./dist/private-vault.d.mts",
+      "import": "./dist/private-vault.mjs"
     }
   },
   "scripts": {
@@ -69,7 +73,8 @@
     "lab:dsh": "npm run build && node examples/dsh-fault-lab.mjs",
     "test:lab:dsh": "npm run build && node --test test/integration/dsh-fault-lab.test.mjs",
     "prepare:openclaw": "node scripts/prepare-openclaw-client.mjs",
-    "test:openclaw": "npm run build && tsc --noEmit -p tsconfig.openclaw.json && node --test test/openclaw-integration/*.test.mjs"
+    "test:openclaw": "npm run build && tsc --noEmit -p tsconfig.openclaw.json && node --test test/openclaw-integration/*.test.mjs",
+    "test:k2a": "npm run typecheck && npm run build && node --test test/admission.test.mjs test/provider-reservations.test.mjs test/private-vault.test.mjs test/openclaw-boundary.test.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.0",

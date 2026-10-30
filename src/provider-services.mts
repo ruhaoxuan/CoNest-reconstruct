@@ -18,6 +18,12 @@ export interface ProviderRecordStore {
   read(key: PrivateRecordKey): PrivateRecord | undefined;
   write(key: PrivateRecordKey, expectedRevision: number | null, value: PrivateJson): PrivateRecord;
 }
+export type PrivateRunLookup = {readonly status:'none'} | {readonly status:'unique';readonly record:PrivateRecord} | {readonly status:'ambiguous'};
+/** Stronger capability required by adapters which retain submission identities across generations. */
+export interface UniqueProviderRecordStore extends ProviderRecordStore {
+  lookupRun(instanceId:string,runId:string):PrivateRunLookup;
+  reserveRun(key:PrivateRecordKey,value:PrivateJson):PrivateRecord;
+}
 export interface PrivateLease<T> {
   readonly reference: `local:${string}`;
   readonly lease: string;
@@ -37,7 +43,7 @@ export interface PrivateReferenceRegistry<T> extends PrivateReferenceService<T> 
   replace(reference: `local:${string}`, value: T): void;
   revoke(reference: `local:${string}`): void;
 }
-function localReference(reference: string): void {
+export function localReference(reference: string): void {
   requireCondition(/^local:[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/.test(reference), 'PRIVATE_REFERENCE_DENIED', 'Invalid local reference');
 }
 /** Identity/key material stays in the entry-owned service, never the public configuration or ledger. */

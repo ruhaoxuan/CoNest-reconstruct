@@ -26,6 +26,7 @@ export function parseExecutionFence(raw:unknown):ExecutionFence {
 export class ExecutionJournal {
  #records=new Map<string,ExecutionFence>();
  constructor(private readonly persistence?:ExecutionPersistence){}
+ get persistenceMode():'configured'|'memory-only'{return this.persistence?'configured':'memory-only';}
  #synchronous(value:unknown){if(value!==undefined){if(value&&typeof value==='object'&&'then' in value)void Promise.resolve(value).catch(()=>{});requireCondition(false,'INVALID_PERSISTENCE','Execution commits must be synchronous');}}
  #save(record:ExecutionFence){this.#synchronous(this.persistence?.save(record));}
  #remove(record:ExecutionFence){this.#synchronous(this.persistence?.remove(record,'normal-settlement'));}

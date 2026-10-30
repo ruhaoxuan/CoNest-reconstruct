@@ -1,5 +1,5 @@
 import { milliseconds } from '../contracts.mjs';
-import type { EnvironmentCredentialService } from '../credentials.mjs';
+import type { CredentialLease, EnvironmentCredentialService } from '../credentials.mjs';
 import type { ProviderResourceBudget, PrivateReferenceService } from '../provider-services.mjs';
 
 declare const millisecondsBrand: unique symbol;
@@ -25,6 +25,20 @@ export interface OpenClawGatewayBinding { readonly endpoint: string; readonly ag
 export interface OpenClawDeviceTokens {
   load(bindingLease:string,identityLease:string):string|undefined;
   store(bindingLease:string,identityLease:string,token:string):void;
+  subscribe?(listener:(bindingLease:string,identityLease:string)=>void):()=>void;
+}
+/** Adapter-private identity snapshot. Never a public Studio result or Gateway auth dump. */
+export interface OpenClawConnectionEvidence {
+  readonly releaseProfile:'openclaw-2026.9.2-v4';
+  readonly protocol:4;
+  readonly peerVersion:'2026.9.2';
+  readonly connectionEpoch:string;
+  readonly gatewayBootId?:string;
+  readonly identityRef:`local:${string}`;
+  readonly identityLease:string;
+  readonly gatewayBindingRef:`local:${string}`;
+  readonly gatewayBindingLease:string;
+  readonly credentialLease:CredentialLease;
 }
 /** Trusted transport boundary. It is not yet a registered HarnessProvider. */
 export interface OpenClawRequestMap {

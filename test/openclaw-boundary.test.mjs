@@ -71,3 +71,13 @@ test('per-connection request limit denies excess work and closing retires all ad
  const admitted=Array.from({length:16},()=>c.request('health',{}, {...requestOptions(),timeoutMs:1000}));const joined=Promise.allSettled(admitted);
  await assert.rejects(c.request('health',{},requestOptions()),{code:'OPENCLAW_REQUEST_LIMIT'});assert.equal(f.state.requests.length,16);await c.close();const results=await joined;assert(results.every(r=>r.status==='rejected'&&r.reason.code==='OPENCLAW_CONNECTION_RETIRED'));
 });
+
+test('private connection evidence is frozen, excludes auth/key material and expires with its connection epoch',async()=>{
+ const f=fixture(),c=new OpenClawConnection(f.options);assert.throws(()=>c.evidence(),{code:'OPENCLAW_NOT_READY'});await c.start();const proof=c.evidence();assert.equal(proof.gatewayBootId,'fixture-boot');assert.equal(proof.protocol,4);assert.equal(proof.credentialLease.persistence,'memory-only');assert(Object.isFrozen(proof.credentialLease));
+ const text=JSON.stringify(proof);for(const secret of [f.state.settings.bootstrapToken,f.state.settings.deviceIdentity.privateKeyPem,hello().auth.deviceToken])assert(!text.includes(secret));assert(!('auth'in proof));assert.throws(()=>{proof.identityLease='changed';});await c.close();assert.throws(()=>c.evidence(),{code:'OPENCLAW_CONNECTION_RETIRED'});
+ const next=new OpenClawConnection(f.options);await next.start();assert.notEqual(next.evidence().connectionEpoch,proof.connectionEpoch);await next.close();
+});
+test('a missing boot ID is explicit, malformed boot IDs fail closed before readiness',async()=>{
+ const missing=hello();delete missing.server.bootId;const f=fixture({hello:missing}),c=new OpenClawConnection(f.options);await c.start();assert.equal(c.evidence().gatewayBootId,undefined);await c.close();
+ const bad=fixture({hello:hello({server:{version:'2026.9.2',connId:'fixture',bootId:{unexpected:true}}})}),d=new OpenClawConnection(bad.options);await assert.rejects(d.start(),{code:'INVALID_REQUEST'});assert.equal(bad.state.storeCalls,0);await d.close();
+});

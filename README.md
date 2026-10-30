@@ -16,7 +16,7 @@ npm run check
 npm run demo
 ```
 
-`npm test` checks types, builds and runs behavior tests. `test:types` proves that 37 deliberately invalid contracts are rejected. Core checks require no SDK, credentials or model service. `check` also checks JavaScript syntax and rejects direct framework imports outside `src/adapters/`. Scripts and JavaScript tests are runtime checked rather than fully statically typed.
+`npm test` checks types, builds and runs behavior tests. `test:types` proves that 46 deliberately invalid contracts are rejected. Core checks require no SDK, credentials or model service. `check` also checks JavaScript syntax and rejects direct framework imports outside `src/adapters/`. Scripts and JavaScript tests are runtime checked rather than fully statically typed.
 
 ## Prepare the optional native DSH support
 
@@ -53,6 +53,28 @@ This increment supplies a trusted low-level transport, **not a registered OpenCl
 Trusted startup code can extend `createEnvironmentCredentials(env, {references: [...]})`; its default remains `env:DEEPSEEK_API_KEY`. Instance JSON cannot extend that allowlist. All registered current and observed old credentials are redacted, including values registered with `remember()` for redaction only. Rotation/revocation rejects old leases and late results/progress without retargeting tasks.
 
 `LocalStateStore.providerRecords(providerId)` supplies adapter-private, generation-scoped synchronous CAS records. Writes are durable before returning, bounded to 32KiB/record and 5000 records total, and refuse known secrets and credential-shaped fields; they are excluded from public jobs, RPC and audit. Adapters must supply the shared redactor. Private identity/binding services are explicitly injected. `createPrivateReferences()` is an in-memory helper: it creates fresh leases on restart, so stable cross-restart identity storage still belongs to the trusted entry implementation. Shared resource budgets retain an unconfirmed connection slot until cleanup or actual socket-close evidence. None of these services changes the core execution fence or grants native tool permissions.
+
+## Durable adapter services
+
+K2-A adds the infrastructure needed for a later attached Harness provider. It does not yet register `openclaw.attached` or enable it in Studio.
+
+```sh
+npm run test:k2a
+```
+
+This focused check uses temporary state, synthetic credentials and controlled transport fixtures; it needs no optional SDK or model key. `npm run validate` also retains the existing real DSH checks. `npm run test:openclaw` separately checks the fixed official SDK and the localhost protocol simulator, including persisted identity/device authentication.
+
+Each Manager dispatch receives a frozen, adapter-only `ExecutionContext.admission` copied from its committed execution fence. It carries the public task correlation, fence/configuration/provider identity and `configured` or `memory-only` persistence mode. It is absent from public results, RPC requests and events; older manually constructed provider contexts remain supported. `configured` describes a trusted persistence contract, not hardware attestation.
+
+`LocalStateStore.providerRecords()` now also provides `lookupRun(instanceId, runId)` and synchronous transactional `reserveRun()`. Reservation spans generations for a provider/instance/run identity. Old success/unknown records and reservations are retained; ambiguity or a lost mapping fails closed instead of generating another native submission. Existing generic read/write remains available, but cannot bypass a reserved identity. Capacity remains bounded and requires explicit maintenance.
+
+`LocalPrivateVault` is exported from `@local/conest-harness-core/private-vault`. The trusted entry chooses a dedicated absolute directory; directory and database files must be owner-only, and shared files/symlinks are refused. It uses a separate `private.sqlite` with a single coordinator lease and synchronous commits. Identity/binding registration is idempotent for identical data; replacement/revocation retires old leases. Scoped credentials are partitioned by identity/binding leases, with explicit revocation and change notifications. A revoked device credential blocks a new connection, rather than appearing to be a first pairing.
+
+The vault's `credentialEpochs()` backend can be explicitly injected into `createEnvironmentCredentials` through `{epochs}`. The environment still supplies the bootstrap secret. Stable sources retain opaque epochs; rotation, revoke/restore or a changed source invalidates old epochs. Only a locally keyed verifier is stored privately; task metadata contains neither the source value nor a plain secret hash. Without a backend, the default credential service remains in memory. Asynchronous backends cannot acknowledge a lease or commit.
+
+The entry supplies the shared `remember()` redactor and declares secret fields when obtaining each reference service. Normal jobs/audit/private execution records never receive vault values. Acquire a fresh lease from the current service before comparing stored opaque identifiers; a deserialized lease is not a capability. Close all consumers before closing the vault. The vault is permission-protected plaintext, not an encrypted OS credential store or isolation against hostile local code. Back up its state together with control state; missing or replaced identity material cannot prove an old execution ended.
+
+`OpenClawConnection.evidence()` exposes only an immutable adapter-private view of the connection epoch, fixed release/protocol, optional Gateway boot ID and opaque identity/binding/credential leases. It expires when the connection is retired. Missing boot ID is explicit and cannot establish Gateway continuity. This view does not prove native execution settlement; durable dispatch, cancellation and reconciliation remain K2-B–D work.
 
 ## Run Studio without model charges
 

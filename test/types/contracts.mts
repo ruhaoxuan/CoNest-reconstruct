@@ -121,3 +121,32 @@ declare const nativeMilliseconds:OpenClawMilliseconds;
 const wrongNativeSeconds:OpenClawRequestMap['agent']['timeout']=nativeMilliseconds;
 // @ts-expect-error transport deadlines cannot silently receive native seconds
 const wrongNativeMillis:OpenClawRequestOptions['timeoutMs']=nativeSeconds;
+
+import type {ExecutionAdmission} from '../../src/index.mjs';
+import type {PrivateRunLookup,UniqueProviderRecordStore} from '../../src/provider-services.mjs';
+import type {CredentialLease,CredentialEpochStore} from '../../src/credentials.mjs';
+import type {DurablePrivateReferences} from '../../src/private-vault.mjs';
+import type {OpenClawConnectionEvidence} from '../../src/adapters/openclaw-types.mjs';
+declare const admissionMeta:ExecutionAdmission;
+// @ts-expect-error providers cannot change committed authority metadata
+admissionMeta.subject='foreign';
+// @ts-expect-error configured persistence is not a claim about guessed external state
+const badAdmissionPersistence:ExecutionAdmission['persistence']='probably-durable';
+// @ts-expect-error a reservation is acknowledged only after synchronous durable commit
+const asyncPrivateReserve:UniqueProviderRecordStore['reserveRun']=async key=>({key,revision:1,value:null});
+declare const privateLookup:PrivateRunLookup;
+// @ts-expect-error ambiguous and missing mappings must be narrowed before reading a record
+const assumedPrivateRun=privateLookup.record;
+// @ts-expect-error lease metadata excludes raw credentials
+const leakingCredentialLease:CredentialLease={reference:'env:KEY',epoch:'epoch',persistence:'configured',value:'raw'};
+declare const activeCredentialLease:CredentialLease;
+// @ts-expect-error a caller cannot roll back a lease epoch
+activeCredentialLease.epoch='old';
+// @ts-expect-error persistent credential observation is synchronous
+const asyncCredentialObserve:CredentialEpochStore['observe']=async()=> 'epoch';
+declare const connectionProof:OpenClawConnectionEvidence;
+// @ts-expect-error private connection evidence excludes the raw Gateway auth envelope
+const leakingConnectionProof:OpenClawConnectionEvidence={...connectionProof,auth:{token:'raw'}};
+declare const durableReferences:DurablePrivateReferences<{privateKeyPem:string}>;
+// @ts-expect-error identities use registered local references, not arbitrary filesystem paths
+durableReferences.register('file:/tmp/device.pem',{privateKeyPem:'raw'});

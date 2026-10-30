@@ -52,7 +52,20 @@ export type HarnessEvent = EventBase & (
   | { readonly type: 'run.progress.v2'; readonly data: ProgressV2 }
   | { readonly type: 'run.started' | 'run.completed' | 'run.timed-out' | 'run.cancelled' | 'run.failed' | 'run.revoked' | 'run.interrupted' | 'run.uncertain'; readonly data?: never }
 );
+/** Trusted adapter context for the exact already-committed execution, never a public wire field. */
+export interface ExecutionAdmission {
+  readonly instanceId: string;
+  readonly runId: string;
+  readonly generation: string;
+  readonly subject: string;
+  readonly fenceId: string;
+  readonly configRevision: string;
+  readonly providerId: string;
+  readonly providerVersion: string;
+  readonly persistence: 'configured' | 'memory-only';
+}
 export interface ExecutionContext {
+  readonly admission?: ExecutionAdmission;
   readonly markUncertain: () => void;
   readonly assertAuthorized: (permission?: string, tool?: string) => void;
   readonly signal: AbortSignal;

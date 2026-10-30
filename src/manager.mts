@@ -340,7 +340,7 @@ export class HarnessManager {
     emit('run.started');
     const work = Promise.resolve().then(() => {
       controller.signal.throwIfAborted();
-      return instance.run(admitted, { signal: controller.signal, markUncertain:()=>{requireCondition(r.runs.has(admitted.runId)&&this.#executions.current(execution),'CALLBACK_EXPIRED','Execution already settled');try{this.#executions.uncertain(execution);}finally{controller.abort(error('RUN_OUTCOME_UNKNOWN','Native execution is uncertain'));}},
+      return instance.run(admitted, { admission:freeze({instanceId:execution.instanceId,runId:execution.runId,generation:execution.generation,subject:execution.subject,fenceId:execution.token,configRevision:execution.configRevision!,providerId:execution.providerId,providerVersion:execution.providerVersion,persistence:this.#executions.persistenceMode}), signal: controller.signal, markUncertain:()=>{requireCondition(r.runs.has(admitted.runId)&&this.#executions.current(execution),'CALLBACK_EXPIRED','Execution already settled');try{this.#executions.uncertain(execution);}finally{controller.abort(error('RUN_OUTCOME_UNKNOWN','Native execution is uncertain'));}},
         assertAuthorized: (permission,tool) => {
           controller.signal.throwIfAborted();
           requireCondition(live && r.instance === instance && r.generation === generation, 'AUTHORITY_REVOKED', 'Task authority is no longer active');

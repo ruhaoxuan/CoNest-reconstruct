@@ -1,10 +1,11 @@
+import type { CredentialLease } from '../credentials.mjs';
 import { createHash, createPrivateKey, createPublicKey, randomUUID, sign, verify } from 'node:crypto';
-import { HarnessError, milliseconds, requireCondition, identifier } from '../contracts.mjs';
+import { freeze, HarnessError, milliseconds, requireCondition, identifier } from '../contracts.mjs';
 import type { PrivateLease } from '../provider-services.mjs';
 import { validateOpenClawConnectionConfig } from './openclaw-config.mjs';
 import { loadOpenClawClient } from './openclaw-client.mjs';
 import { OPENCLAW_RELEASE, OPENCLAW_WIRE, OPENCLAW_SCOPES, openClawMilliseconds } from './openclaw-types.mjs';
-import type { GatewayClientPort, OpenClawConnectionOptions, OpenClawRequestMap, OpenClawRequestOptions, OpenClawDeviceIdentity, OpenClawGatewayBinding } from './openclaw-types.mjs';
+import type { GatewayClientPort, OpenClawConnectionOptions, OpenClawRequestMap, OpenClawRequestOptions, OpenClawDeviceIdentity, OpenClawGatewayBinding, OpenClawConnectionEvidence } from './openclaw-types.mjs';
 import { object, fields } from '../config.mjs';
 export type * from './openclaw-types.mjs';
 export { validateOpenClawConnectionConfig } from './openclaw-config.mjs';
@@ -25,6 +26,9 @@ export class OpenClawConnection {
   #identity:PrivateLease<OpenClawDeviceIdentity>|undefined;
   #binding:PrivateLease<OpenClawGatewayBinding>|undefined;
   #credential:string|undefined;
+  #credentialLease:CredentialLease|undefined;
+  #evidence:OpenClawConnectionEvidence|undefined;
+  #deviceUnsubscribe:(()=>void)|undefined;
   #client:GatewayClientPort|undefined;
   #started=false;
   #ready=false;
@@ -51,6 +55,7 @@ export class OpenClawConnection {
     try {
       this.#options.identities.assertActive(this.#identity);this.#options.bindings.assertActive(this.#binding);
       this.#options.credentials.assertActive!(this.#config.credentialRef,this.#credential);
+      if(this.#credentialLease)this.#options.credentials.assertLease(this.#credentialLease);
     } catch(error) {const safe=error instanceof HarnessError?error:failure('PRIVATE_LEASE_STALE');this.#retire(safe);throw safe;}
   }
   #retire(error?:HarnessError):void {
@@ -58,7 +63,7 @@ export class OpenClawConnection {
     this.#ended=true;this.#ready=false;this.#epoch=randomUUID();
     this.#abort.abort(error??failure('OPENCLAW_CONNECTION_RETIRED'));
     this.#rejectReady?.(error??failure('OPENCLAW_CONNECTION_RETIRED'));
-    this.#unsubscribe?.();this.#unsubscribe=undefined;
+    this.#unsubscribe?.();this.#unsubscribe=undefined;this.#deviceUnsubscribe?.();this.#deviceUnsubscribe=undefined;
     try{this.#client?.stop();}catch{} // Synchronous retirement prevents the SDK's reconnect supervisor.
     if(error){try{this.#options.onFailure?.(error.code);}catch{}}
   }
@@ -73,11 +78,11 @@ export class OpenClawConnection {
   async start(context?:{readonly signal:AbortSignal}):Promise<void> {
     requireCondition(!this.#started&&!this.#ended,'OPENCLAW_CONNECTION_RETIRED','Create a fresh connection for another epoch');this.#started=true;
     const {credentials,identities,bindings,deviceTokens}=this.#options;
-    requireCondition(typeof credentials.assertActive==='function'&&typeof credentials.subscribe==='function'&&typeof credentials.remember==='function','CREDENTIAL_SERVICE_REQUIRED','A revocable credential service with redaction registration is required');
+    requireCondition(typeof credentials.assertActive==='function'&&typeof credentials.subscribe==='function'&&typeof credentials.remember==='function'&&typeof credentials.acquire==='function'&&typeof credentials.assertLease==='function','CREDENTIAL_SERVICE_REQUIRED','A revocable credential service with redaction registration is required');
     this.#identity=identities.acquire(this.#config.identityRef);this.#binding=bindings.acquire(this.#config.gatewayBindingRef);
     const binding=this.#binding.value;
     requireCondition(binding.endpoint===this.#config.endpoint&&binding.agentId===this.#config.agentId&&binding.releaseProfile===this.#config.releaseProfile,'OPENCLAW_BINDING_MISMATCH','The trusted Gateway binding does not match the connection');
-    this.#credential=credentials.resolve(this.#config.credentialRef);
+    this.#credential=credentials.resolve(this.#config.credentialRef);this.#credentialLease=credentials.acquire(this.#config.credentialRef);
     const identity=this.#identity.value;
     requireCondition(typeof identity.privateKeyPem==='string'&&identity.privateKeyPem.length<=8192&&typeof identity.publicKeyPem==='string'&&identity.publicKeyPem.length<=8192,'OPENCLAW_IDENTITY_INVALID','Invalid device key material');
     let publicRaw:string;
@@ -119,12 +124,15 @@ export class OpenClawConnection {
           try {
             this.#check();const h=object(hello,'hello'),server=object(h.server,'server'),features=object(h.features,'features'),auth=object(h.auth,'auth');
             requireCondition(h.type==='hello-ok'&&h.protocol===OPENCLAW_WIRE,'OPENCLAW_PROTOCOL_MISMATCH','Unsupported wire protocol');
+            if(server.bootId!==undefined)identifier(server.bootId,'Gateway boot identity');
             requireCondition(server.version===OPENCLAW_RELEASE,'OPENCLAW_VERSION_MISMATCH','The Gateway version must match the fixed profile exactly');
             requireCondition(typeof server.connId==='string'&&server.connId.length>0&&server.connId.length<=256,'OPENCLAW_HANDSHAKE_REJECTED','Missing connection identity');
             requireCondition(auth.role==='operator','OPENCLAW_SCOPE_DENIED','Operator role required');scopes(auth.scopes);
             requireCondition(Array.isArray(features.methods)&&['agent','agent.wait','chat.abort','health'].every(m=>(features.methods as unknown[]).includes(m)),'OPENCLAW_METHOD_UNAVAILABLE','Required native methods unavailable');
             const paired=auth.deviceToken??token;deviceToken(paired);credentials.remember(paired);
-            this.#check();deviceTokens.store(this.#binding!.lease,this.#identity!.lease,paired);
+            this.#check();deviceTokens.store(this.#binding!.lease,this.#identity!.lease,paired);this.#check();
+            this.#evidence=freeze({releaseProfile:this.#config.releaseProfile,protocol:OPENCLAW_WIRE,peerVersion:OPENCLAW_RELEASE,connectionEpoch:epoch,...(server.bootId===undefined?{}:{gatewayBootId:server.bootId as string}),identityRef:this.#config.identityRef,identityLease:this.#identity!.lease,gatewayBindingRef:this.#config.gatewayBindingRef,gatewayBindingLease:this.#binding!.lease,credentialLease:this.#credentialLease!});
+            this.#deviceUnsubscribe=deviceTokens.subscribe?.((binding,identity)=>{if(binding===this.#binding?.lease&&identity===this.#identity?.lease)this.#retire(failure('CREDENTIAL_STALE'));});
             this.#ready=true;resolveReady();
           }catch(error){stopOnError(error);}
         },
@@ -184,5 +192,6 @@ export class OpenClawConnection {
     }catch(error){if(error instanceof HarnessError)throw error;if(error&&typeof error==='object'&&'code' in error&&error.code==='CLIENT_TIMEOUT')throw failure('OPENCLAW_REQUEST_TIMEOUT');throw failure('OPENCLAW_REQUEST_FAILED');}
     finally {active=false;this.#inflight--;if(onAbort)combined.removeEventListener('abort',onAbort);}
   }
+  evidence():OpenClawConnectionEvidence {this.#check();requireCondition(this.#ready&&this.#evidence,'OPENCLAW_NOT_READY','Handshake must complete before reading connection evidence');return freeze(structuredClone(this.#evidence));}
   async close():Promise<void> {this.#retire();await this.#drain();}
 }

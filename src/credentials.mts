@@ -10,14 +10,27 @@ export interface CredentialService {
   restore?(reference:string):void;
   rotate?(reference:string,value:string):void;
 }
+export interface EnvironmentCredentialService extends CredentialService {
+  /** Trusted redaction registration; does not make a value resolvable by configuration. */
+  remember(value: string): void;
+}
+export interface EnvironmentCredentialOptions {
+  /** Trusted startup registration only. Untrusted instance JSON cannot extend this list. */
+  readonly references?: readonly `env:${string}`[];
+}
 /** Explicit allowlist: configuration cannot read arbitrary environment variables. */
-export function createEnvironmentCredentials(env: NodeJS.ProcessEnv = process.env): CredentialService {
+export function createEnvironmentCredentials(env: NodeJS.ProcessEnv = process.env, options: EnvironmentCredentialOptions = {}): EnvironmentCredentialService {
+  const references = new Set(options.references ?? ['env:DEEPSEEK_API_KEY']);
+  requireCondition(references.size <= 64 && [...references].every(ref => /^env:[A-Z][A-Z0-9_]{0,63}$/.test(ref)),
+    'CREDENTIAL_REFERENCE_DENIED', 'Invalid trusted credential registration');
   const known = new Set<string>(),revoked=new Set<string>(),listeners=new Set<(reference:string,change:'revoked'|'rotated'|'restored')=>void>();
-  const allowed=(ref:string)=>requireCondition(['env:DEEPSEEK_API_KEY'].includes(ref),'CREDENTIAL_REFERENCE_DENIED','Unsupported credential reference');
+  const allowed=(ref:string)=>requireCondition(references.has(ref as `env:${string}`),'CREDENTIAL_REFERENCE_DENIED','Unsupported credential reference');
   const notify=(ref:string,change:'revoked'|'rotated'|'restored')=>{for(const listener of listeners){try{listener(ref,change);}catch{}}};
+  for(const ref of references){const value=env[ref.slice(4)]?.trim();if(value&&value.length>=8)known.add(value);}
   return {
+    remember(value){requireCondition(typeof value==='string'&&value.length>=8&&value.length<=16384,'CREDENTIAL_UNAVAILABLE','Invalid redaction registration');known.add(value);},
     resolve(reference) {
-      requireCondition(['env:DEEPSEEK_API_KEY'].includes(reference), 'CREDENTIAL_REFERENCE_DENIED', 'Unsupported credential reference');
+      allowed(reference);
       requireCondition(!revoked.has(reference),'CREDENTIAL_REVOKED','Credential is revoked');
       const value = env[reference.slice(4)]?.trim();
       requireCondition(value && value.length >= 8 && value.length <= 4096 && !/\s/.test(value),
@@ -31,8 +44,9 @@ export function createEnvironmentCredentials(env: NodeJS.ProcessEnv = process.en
     rotate(reference,value){allowed(reference);requireCondition(value.length>=8&&value.length<=4096&&!/\s/.test(value),'CREDENTIAL_UNAVAILABLE','Invalid credential');const old=env[reference.slice(4)]?.trim();if(old)known.add(old);env[reference.slice(4)]=value;known.add(value);notify(reference,'rotated');},
     redact(text) {
       // Redact both current and previously resolved credentials (including after rotation).
-      const current = [env.DEEPSEEK_API_KEY].map(v=>v?.trim()).filter((v):v is string=>Boolean(v&&v.length>=8));
-      const values = [...known, ...current].sort((a, b) => b.length - a.length);
+      const current = [...references].map(ref=>env[ref.slice(4)]?.trim()).filter((v):v is string=>Boolean(v&&v.length>=8));
+      for(const value of current)known.add(value);
+      const values = [...known].sort((a, b) => b.length - a.length);
       let safe = text;
       for (const value of values) {const escaped=JSON.stringify(value).slice(1,-1),double=JSON.stringify(escaped).slice(1,-1);for(const variant of [...new Set([double,escaped,value])].sort((a,b)=>b.length-a.length))safe=safe.split(variant).join('[REDACTED]');}
       return safe;
@@ -44,12 +58,13 @@ export function createEnvironmentCredentials(env: NodeJS.ProcessEnv = process.en
  * inference is replayed with a replacement secret. Stop/recreate to get a new lease. */
 export function guardCredentialInstance<T>(instance:HarnessInstance<T>,credentials:CredentialService,reference:string,value:string):HarnessInstance<T>{
   let failure:((code:InstanceFailureCode)=>void)|undefined;
-  const unsubscribe=credentials.subscribe?.((ref,change)=>{if(ref===reference)failure?.(change==='revoked'?'CREDENTIAL_REVOKED':'CREDENTIAL_STALE');});
-  const check=()=>credentials.assertActive?.(reference,value);
+  let invalid:InstanceFailureCode|undefined;
+  const unsubscribe=credentials.subscribe?.((ref,change)=>{if(ref===reference){invalid=invalid==='CREDENTIAL_REVOKED'||change==='revoked'?'CREDENTIAL_REVOKED':'CREDENTIAL_STALE';failure?.(invalid);}});
+  const check=()=>{requireCondition(!invalid,invalid??'CREDENTIAL_STALE','Credential lease was retired; recreate the instance');credentials.assertActive?.(reference,value);};
   return {
-    setFailureHandler(handler){failure=handler;instance.setFailureHandler?.(handler);},
+    setFailureHandler(handler){failure=handler;instance.setFailureHandler?.(handler);if(invalid)handler?.(invalid);},
     async start(context){check();await instance.start(context);check();},
-    async run(task,context){check();return instance.run(task,{...context,assertAuthorized(permission,tool){check();context.assertAuthorized(permission,tool);}});},
+    async run(task,context){check();const result=await instance.run(task,{...context,emit(data){check();context.emit(data);},assertAuthorized(permission,tool){check();context.assertAuthorized(permission,tool);}});check();return result;},
     ...(instance.reconcileExecution?{async reconcileExecution(record,context){check();const result=await instance.reconcileExecution!(record,context);check();return result;}}:{}),
     async stop(){await instance.stop();unsubscribe?.();},
     ...(instance.terminate?{async terminate(){await instance.terminate!();unsubscribe?.();}}:{}),

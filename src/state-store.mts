@@ -1,3 +1,6 @@
+import { privateRecordKey, privateRecordValue } from './provider-services.mjs';
+import type { PrivateRecord, ProviderRecordStore } from './provider-services.mjs';
+import { identifier } from './contracts.mjs';
 import { parseExecutionFence } from './execution-journal.mjs';
 import type { ExecutionFence } from './execution-journal.mjs';
 import { DatabaseSync } from 'node:sqlite';
@@ -36,6 +39,7 @@ export class LocalStateStore {
       this.#db.prepare('INSERT OR REPLACE INTO lease(id,pid,token) VALUES(1,?,?)').run(process.pid,this.#lease);
       this.#db.exec('COMMIT');
       this.#db.exec('CREATE TABLE IF NOT EXISTS executions(instance_id TEXT NOT NULL,run_id TEXT NOT NULL,token TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(instance_id,run_id))');
+      this.#db.exec('CREATE TABLE IF NOT EXISTS provider_records(provider TEXT NOT NULL,instance_id TEXT NOT NULL,run_id TEXT NOT NULL,generation TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL,PRIMARY KEY(provider,instance_id,run_id,generation))');
       const columns=this.#db.prepare('PRAGMA table_info(rpc)').all() as {name:string}[];
       if(!columns.some(c=>c.name==='completed'))this.#db.exec('ALTER TABLE rpc ADD COLUMN completed INTEGER NOT NULL DEFAULT 0');
       this.#db.exec('UPDATE rpc SET completed=1 WHERE response IS NOT NULL');
@@ -77,6 +81,30 @@ export class LocalStateStore {
       this.#db.prepare('INSERT INTO audit(value) VALUES(?)').run(JSON.stringify({at:new Date().toISOString(),type:'execution.'+evidence,instanceId:record.instanceId,runId:record.runId}));
       this.#db.exec('DELETE FROM audit WHERE seq NOT IN (SELECT seq FROM audit ORDER BY seq DESC LIMIT 5000); COMMIT');
     }catch(error){try{this.#db.exec('ROLLBACK');}catch{}this.#status='failed';throw error instanceof HarnessError?error:new HarnessError('STATE_WRITE_FAILED','Execution settlement not committed');}
+  }
+  /** Trusted adapter-only capability. Excluded from jobs, snapshots, audit and RPC. */
+  providerRecords(providerId:string):ProviderRecordStore {
+    const provider=identifier(providerId,'providerId');
+    return {
+      read:key=>{
+        this.#assertLease();const k=privateRecordKey(key);
+        const row=this.#db.prepare('SELECT revision,value FROM provider_records WHERE provider=? AND instance_id=? AND run_id=? AND generation=?').get(provider,k.instanceId,k.runId,k.generation) as {revision:number;value:string}|undefined;
+        return row?{key:k,revision:row.revision,value:privateRecordValue(JSON.parse(row.value),this.#redact)}:undefined;
+      },
+      write:(key,expectedRevision,value):PrivateRecord=>{
+        this.#assertLease();const k=privateRecordKey(key),safe=privateRecordValue(value,this.#redact);
+        requireCondition(expectedRevision===null||(Number.isSafeInteger(expectedRevision)&&expectedRevision>0&&expectedRevision<Number.MAX_SAFE_INTEGER),'PRIVATE_RECORD_CONFLICT','Invalid expected revision');
+        try {
+          this.#db.exec('BEGIN IMMEDIATE');
+          const old=this.#db.prepare('SELECT revision FROM provider_records WHERE provider=? AND instance_id=? AND run_id=? AND generation=?').get(provider,k.instanceId,k.runId,k.generation) as {revision:number}|undefined;
+          requireCondition((old?.revision??null)===expectedRevision,'PRIVATE_RECORD_CONFLICT','Private record changed');
+          requireCondition(Boolean(old)||(this.#db.prepare('SELECT count(*) AS n FROM provider_records').get() as {n:number}).n<5000,'PRIVATE_RECORD_FULL','Private ledger is full; records are never automatically evicted');
+          const revision=(expectedRevision??0)+1;
+          this.#db.prepare('INSERT OR REPLACE INTO provider_records(provider,instance_id,run_id,generation,revision,value) VALUES(?,?,?,?,?,?)').run(provider,k.instanceId,k.runId,k.generation,revision,JSON.stringify(safe));
+          this.#db.exec('COMMIT');return {key:k,revision,value:safe};
+        } catch(error) {try{this.#db.exec('ROLLBACK');}catch{}if(error instanceof HarnessError)throw error;this.#status='failed';throw new HarnessError('STATE_WRITE_FAILED','Private provider record was not committed');}
+      },
+    };
   }
   credentialRevocations():string[]{return (this.#db.prepare('SELECT reference FROM credentials WHERE revoked=1').all() as {reference:string}[]).map(row=>row.reference);}
   async setCredentialRevoked(reference:string,revoked:boolean):Promise<void>{

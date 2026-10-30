@@ -13,6 +13,6 @@ try {
   const bad = spawnSync(process.execPath, tsc, { encoding: 'utf8' });
   assert.equal(bad.status, 2, bad.stdout + bad.stderr);
   const diagnostics = bad.stdout.split('\n').filter(line => line.includes(`negative-probe-${process.pid}.mts`) && /error TS\d+/.test(line));
-  assert.equal(diagnostics.length, 28, bad.stdout + bad.stderr);
-  console.log('Type contracts passed; all 28 deliberately invalid contracts were rejected');
+  assert.equal(diagnostics.length, 37, bad.stdout + bad.stderr);
+  console.log('Type contracts passed; all 37 deliberately invalid contracts were rejected');
 } finally { await unlink(fixture); }

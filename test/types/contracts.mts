@@ -94,3 +94,30 @@ const labAction:LabAction={id:'request-id',action:'run',instanceId:'a',scenario:
 const badLabPid:LabAction={id:'request-id',action:'terminate-worker',instanceId:'a',pid:123};
 // @ts-expect-error lab scenarios are a closed set, never arbitrary executable names
 const badLabScenario:LabAction={id:'request-id',action:'run',instanceId:'a',scenario:'remote-shell'};
+
+
+import { createEnvironmentCredentials } from '../../src/credentials.mjs';
+import type { ProviderRecordStore, ProviderPrivateServices } from '../../src/provider-services.mjs';
+import type { OpenClawConnectionConfig, OpenClawRequestMap, OpenClawRequestOptions } from '../../src/adapters/openclaw-types.mjs';
+// @ts-expect-error trusted environment references still require an explicit reference scheme
+createEnvironmentCredentials({}, {references:['HOME']});
+// @ts-expect-error private durable writes cannot acknowledge with a Promise
+const badPrivateWriter:ProviderRecordStore={read(){return undefined;},async write(key){return {key,revision:1,value:null};}};
+// @ts-expect-error identities are injected services, not paths supplied by instance JSON
+const badPrivateIdentity:ProviderPrivateServices<unknown,unknown>['identities']='/tmp/device.pem';
+// @ts-expect-error a transport deadline cannot be null or infinite-by-default
+const badNativeDeadline:OpenClawRequestOptions={timeoutMs:null,signal:new AbortController().signal};
+// @ts-expect-error precise cancellation always requires the native run identity
+const badNativeAbort:OpenClawRequestMap['chat.abort']={agentId:'a',sessionKey:'s'};
+// @ts-expect-error the native transport excludes arbitrary administrative methods
+const badNativeMethod:keyof OpenClawRequestMap='gateway.shutdown';
+// @ts-expect-error connection configuration contains references rather than raw device credentials
+const badNativeSecret:OpenClawConnectionConfig={releaseProfile:'openclaw-2026.9.2-v4',endpoint:'ws://127.0.0.1:18810',agentId:'a',credentialRef:'env:BOOTSTRAP',identityRef:'local:d',gatewayBindingRef:'local:b',token:'raw'};
+
+import type {OpenClawMilliseconds, OpenClawSeconds} from '../../src/adapters/openclaw-types.mjs';
+declare const nativeSeconds:OpenClawSeconds;
+declare const nativeMilliseconds:OpenClawMilliseconds;
+// @ts-expect-error the native seconds field cannot silently receive milliseconds
+const wrongNativeSeconds:OpenClawRequestMap['agent']['timeout']=nativeMilliseconds;
+// @ts-expect-error transport deadlines cannot silently receive native seconds
+const wrongNativeMillis:OpenClawRequestOptions['timeoutMs']=nativeSeconds;

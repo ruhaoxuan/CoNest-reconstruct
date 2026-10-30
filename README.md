@@ -16,7 +16,7 @@ npm run check
 npm run demo
 ```
 
-`npm test` checks types, builds and runs behavior tests. `test:types` proves that 28 deliberately invalid contracts are rejected. Core checks require no SDK, credentials or model service. `check` also checks JavaScript syntax and rejects direct framework imports outside `src/adapters/`. Scripts and JavaScript tests are runtime checked rather than fully statically typed.
+`npm test` checks types, builds and runs behavior tests. `test:types` proves that 37 deliberately invalid contracts are rejected. Core checks require no SDK, credentials or model service. `check` also checks JavaScript syntax and rejects direct framework imports outside `src/adapters/`. Scripts and JavaScript tests are runtime checked rather than fully statically typed.
 
 ## Prepare the optional native DSH support
 
@@ -34,6 +34,25 @@ The reference repository only supplies the pinned bootstrap/dependency metadata 
 Preparation refuses an existing destination. For a recognized native support pack, stop its instances before an explicit `npm run prepare:runtime -- /absolute/path/to/CoNest --rebuild`; this verifies dependency provenance and rebuilds the selected helpers. The previous `.vendor/conest` cache is not used or overwritten. No separate configuration overlay is required. Every checkout owns its installation.
 
 The frozen upstream lock retains unused package records; they do not cause those packages to be installed. Integration checks confirm OpenClaw cannot be resolved from the native support installation. The build seal detects accidental file drift; it is not an adversarial signature or a hash of every installed transitive module. SDK interop uses an explicit narrow runtime boundary and integration checks, not a claim that all upstream internals are statically retyped.
+
+## Optional OpenClaw connection checks
+
+The optional connection layer pins `@openclaw/gateway-client` and `@openclaw/gateway-protocol` to **2026.9.2**, with wire protocol **4**. It uses the official public client export, injected Ed25519 device identity, a trusted loopback Gateway binding and exactly operator read/write scopes. CoNest core, DSH and the default Studio do not require or load this support pack.
+
+```sh
+npm run prepare:openclaw
+npm run test:openclaw
+```
+
+Preparation is explicit, installs only five packages into this checkout's `.vendor/openclaw-client` using a frozen lock, and runs no dependency lifecycle scripts. It refuses any existing destination, including an incomplete installation. Stop users of the old support pack and move that specific directory aside for review before preparing again. No user Gateway, identity directory or credentials are copied. Dependency licenses remain in the support installation. The file seal detects accidental drift; it is not a signature against a malicious local maintainer. The [official client guide](https://docs.openclaw.ai/gateway/clients) describes the standalone client boundary.
+
+`test:openclaw` checks the transport types against the exact SDK and connects the **real client to a local protocol simulator**, using generated test identities and synthetic credentials. It does not start a real Gateway or perform model inference. Tests cover signed challenge/response, bootstrap-to-device authentication, version/scope/method refusal, pairing refusal, bounded final waits, RPC limits, credential revocation, stale callbacks, no reconnect/replay after disconnect, and dependency drift. These checks are separate from `validate`; they require the explicitly prepared optional support pack.
+
+This increment supplies a trusted low-level transport, **not a registered OpenClaw Harness provider or a new Studio execution option**. Adding `openclaw.attached` to `instances.json` remains unsupported. Durable native-run mapping, ownership-aware cancellation, execution settlement/reconciliation and real Gateway qualification come next. The transport's in-memory submission-key guard is not crash-safe deduplication. A transport timeout or closed connection does not establish that native work ended.
+
+Trusted startup code can extend `createEnvironmentCredentials(env, {references: [...]})`; its default remains `env:DEEPSEEK_API_KEY`. Instance JSON cannot extend that allowlist. All registered current and observed old credentials are redacted, including values registered with `remember()` for redaction only. Rotation/revocation rejects old leases and late results/progress without retargeting tasks.
+
+`LocalStateStore.providerRecords(providerId)` supplies adapter-private, generation-scoped synchronous CAS records. Writes are durable before returning, bounded to 32KiB/record and 5000 records total, and refuse known secrets and credential-shaped fields; they are excluded from public jobs, RPC and audit. Adapters must supply the shared redactor. Private identity/binding services are explicitly injected. `createPrivateReferences()` is an in-memory helper: it creates fresh leases on restart, so stable cross-restart identity storage still belongs to the trusted entry implementation. Shared resource budgets retain an unconfirmed connection slot until cleanup or actual socket-close evidence. None of these services changes the core execution fence or grants native tool permissions.
 
 ## Run Studio without model charges
 

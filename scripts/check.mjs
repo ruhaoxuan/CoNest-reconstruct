@@ -8,7 +8,7 @@ async function check(dir) {
     else if (file.endsWith('.mjs') || file.endsWith('.mts')) {
       if (file.endsWith('.mjs')) execFileSync(process.execPath, ['--check', file]);
       if (file.startsWith('src/') && !file.startsWith('src/adapters/'))
-        assert.doesNotMatch(await readFile(file, 'utf8'), /(?:from\s*|import\s*\()['"](?:openclaw|@deepseek-ai)/);
+        assert.doesNotMatch(await readFile(file, 'utf8'), /(?:from\s*|import\s*\()['"](?:openclaw|@openclaw|@deepseek-ai)/);
     }
   }
 }

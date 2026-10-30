@@ -42,6 +42,10 @@
     "./public-v2": {
       "types": "./dist/public-v2.d.mts",
       "import": "./dist/public-v2.mjs"
+    },
+    "./provider-services": {
+      "types": "./dist/provider-services.d.mts",
+      "import": "./dist/provider-services.mjs"
     }
   },
   "scripts": {
@@ -63,7 +67,9 @@
     "test:conformance": "npm run build && node --test test/conformance.test.mjs test/integration/dsh-conformance.test.mjs",
     "test:dsh:faults": "npm run build && node --test test/integration/dsh-http-faults.test.mjs",
     "lab:dsh": "npm run build && node examples/dsh-fault-lab.mjs",
-    "test:lab:dsh": "npm run build && node --test test/integration/dsh-fault-lab.test.mjs"
+    "test:lab:dsh": "npm run build && node --test test/integration/dsh-fault-lab.test.mjs",
+    "prepare:openclaw": "node scripts/prepare-openclaw-client.mjs",
+    "test:openclaw": "npm run build && tsc --noEmit -p tsconfig.openclaw.json && node --test test/openclaw-integration/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "22.20.0",

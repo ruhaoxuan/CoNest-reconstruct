@@ -1,0 +1,10 @@
+{
+  "name": "conest-optional-openclaw-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@openclaw/gateway-client": "2026.9.2",
+    "@openclaw/gateway-protocol": "2026.9.2"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@openclaw/gateway-client": ["./.vendor/openclaw-client/node_modules/@openclaw/gateway-client/dist/index.d.mts"]
+    }
+  },
+  "include": ["test/openclaw-integration/sdk-contract.mts"]
+}
